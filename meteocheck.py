@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.1.0
+* VERSIONS : 1.1.1
 * NOTES : None
 *
 '''
@@ -15,6 +15,7 @@ import aiofiles
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters import Command
+from aiogram import exceptions
 import aiohttp
 import sys
 import traceback
@@ -115,6 +116,7 @@ async def get_weather_data():
 
                         # Enregistrer les données dans un CSV
                         past_hour_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
+                        await log_message(f"Enregistrement des données dans le CSV")
                 
                     except Exception as e:
                         await log_message(f"Error in writing data to csv in get_weather_data: {str(e)}")
@@ -133,14 +135,22 @@ async def get_weather_data():
 async def send_alert(message, row=None, alert_column=None):
     if row is not None and alert_column is not None:
         await check_records(row, alert_column)
+
     try:
         # Lire le fichier json pour obtenir tous les IDs de chat
         with open('chat_ids.json', 'r') as file:
             chats = json.load(file)
-            
+
         for chat_id in chats:
-            await bot.send_message(chat_id=chat_id, text=message)
-        
+            success = False
+            while not success:
+                try:
+                    await bot.send_message(chat_id=chat_id, text=message)
+                    success = True  # Si l'envoi du message est réussi, marquer comme réussi et sortir de la boucle while
+                except exceptions.TelegramAPIError as e:
+                    print(f"Erreur rencontrée lors de l'envoi du message au chat {chat_id} : {e}")
+                    await asyncio.sleep(1)  # attendre une seconde avant de réessayer
+                
         await log_message(f"Sent alert: {message}")
     except Exception as e:
         await log_message(f"Error in send_alert: {str(e)}")
@@ -152,8 +162,16 @@ async def check_weather():
         df = await get_weather_data()
 
         # Si le df est vide, on peut simplement retourner 
+        retry_count = 0  # Compteur pour le nombre de tentatives
+        while df.empty and retry_count < 5:  # Limite le nombre de tentatives à 5
+            await log_message(f"No data obtained from get_weather_data in check_weather. Retry count: {retry_count}")
+            await asyncio.sleep(120)  # Attendez 120 secondes avant de réessayer
+            df = await get_weather_data()
+            retry_count += 1
+
+        # Si après 5 tentatives, aucune donnée n'est obtenue, log l'erreur et return
         if df.empty:
-            await log_message(f"No data obtained from get_weather_data in check_weather.")
+            await log_message(f"No data obtained from get_weather_data in check_weather after 5 attempts.")
             return
     
         # Vérifier les conditions d'alerte

@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.1.1
+* VERSIONS : 1.1.2
 * NOTES : None
 *
 '''
@@ -246,7 +246,11 @@ async def end_of_month_summary():
         current_month = df['time'].dt.to_period('M').max()
         df = df[df['time'].dt.to_period('M') == current_month]
 
-        df.set_index(df['time'].dt.date, inplace=True)
+        # Group by day and sum precipitation for each day
+        df['day'] = df['time'].dt.date
+        df['daily_precipitation'] = df.groupby('day')['precipitation'].transform('sum')
+
+        df.set_index('day', inplace=True)
 
         hot_day = df['temperature'].idxmax()
         max_temp = df.loc[hot_day, 'temperature'].max() # type: ignore
@@ -254,14 +258,14 @@ async def end_of_month_summary():
         cold_day = df['temperature'].idxmin()
         min_temp = df.loc[cold_day, 'temperature'].min() # type: ignore
 
-        rain_day = df['precipitation'].idxmax()
-        max_precipitation = df.loc[rain_day, 'precipitation'].max() # type: ignore
+        rain_day = df['daily_precipitation'].idxmax()
+        max_precipitation = df.loc[rain_day, 'daily_precipitation'].max() # type: ignore
 
         uv_day = df['uv_index'].idxmax()
         max_uv_index = df.loc[uv_day, 'uv_index'].max() # type: ignore
 
         rain_threshold = 0.1
-        rainy_days = df[df['precipitation'] > rain_threshold].index.nunique()
+        rainy_days = df[df['daily_precipitation'] > rain_threshold].index.nunique()
 
         await send_alert(f"Résumé de fin de mois : Le jour le plus chaud était {hot_day} avec {max_temp}°C. Le jour le plus froid était {cold_day} avec {min_temp}°C. Le jour avec le plus de pluie était {rain_day} avec {max_precipitation}mm. Le jour avec le plus fort index UV était {uv_day} avec un index de {max_uv_index}. Le nombre de jours de pluie était {rainy_days}.")
 
@@ -276,7 +280,11 @@ async def end_of_year_summary():
         current_year = df['time'].dt.to_period('Y').max()
         df = df[df['time'].dt.to_period('Y') == current_year]
 
-        df.set_index(df['time'].dt.date, inplace=True)
+        # Group by day and sum precipitation for each day
+        df['day'] = df['time'].dt.date
+        df['daily_precipitation'] = df.groupby('day')['precipitation'].transform('sum')
+
+        df.set_index('day', inplace=True)
 
         hot_day = df['temperature'].idxmax()
         max_temp = df.loc[hot_day, 'temperature'].max() # type: ignore
@@ -284,8 +292,8 @@ async def end_of_year_summary():
         cold_day = df['temperature'].idxmin()
         min_temp = df.loc[cold_day, 'temperature'].min() # type: ignore
 
-        rain_day = df['precipitation'].idxmax()
-        max_precipitation = df.loc[rain_day, 'precipitation'].max() # type: ignore
+        rain_day = df['daily_precipitation'].idxmax()
+        max_precipitation = df.loc[rain_day, 'daily_precipitation'].max() # type: ignore
 
         uv_day = df['uv_index'].idxmax()
         max_uv_index = df.loc[uv_day, 'uv_index'].max() # type: ignore
@@ -294,7 +302,7 @@ async def end_of_year_summary():
         max_wind_speed = df.loc[wind_day, 'wind_speed'].max() # type: ignore
 
         rain_threshold = 0.1
-        rainy_days = df[df['precipitation'] > rain_threshold].index.nunique()
+        rainy_days = df[df['daily_precipitation'] > rain_threshold].index.nunique()
 
         await send_alert(f"Résumé de fin d'année : Le jour le plus chaud était {hot_day} avec {max_temp}°C. Le jour le plus froid était {cold_day} avec {min_temp}°C. Le jour avec le plus de pluie était {rain_day} avec {max_precipitation}mm. Le jour avec le plus fort index UV était {uv_day} avec un index de {max_uv_index}. Le jour avec le vent le plus fort était {wind_day} avec une vitesse de {max_wind_speed} km/h. Le nombre de jours de pluie était {rainy_days}.")
 

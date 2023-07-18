@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.1.2
+* VERSIONS : 1.1.3
 * NOTES : None
 *
 '''
@@ -45,15 +45,6 @@ if not os.path.exists(csv_filename):
     # Enregistrer le DataFrame vide dans un CSV
     df.to_csv(csv_filename, index=False)
 
-# Définir les alertes déjà envoyées pour le jour en cours
-sent_alerts = {
-    'temperature': None,
-    'precipitation': None,
-    'windspeed': None,
-    'uv_index': None,
-    'pressure': None
-}
-
 def log_uncaught_exceptions(exc_type, exc_value, exc_traceback):
     error_message = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
     asyncio.run(log_message(f"Uncaught exception: {error_message}"))
@@ -63,6 +54,15 @@ sys.excepthook = log_uncaught_exceptions
 async def log_message(message: str):
     async with aiofiles.open("log_meteocheck.log", mode='a') as f:
         await f.write(f"{datetime.datetime.now()} - {message}\n")
+
+# Définir les alertes déjà envoyées pour le jour en cours
+sent_alerts = {
+    'temperature': None,
+    'precipitation': None,
+    'windspeed': None,
+    'uv_index': None,
+    'pressure_msl': None
+}
 
 async def get_weather_data():
     try:
@@ -102,6 +102,25 @@ async def get_weather_data():
                 df_existing = pd.read_csv(csv_filename)
                 df_existing['time'] = pd.to_datetime(df_existing['time'])
 
+                # Filtrer les données pour garder seulement celles de deux heures en arrière
+                two_hours_ago = now - pd.Timedelta(hours=2)
+                past_two_hours_df = df[(df['time'] >= two_hours_ago) & (df['time'] < now)]
+
+                # Vérifier si les deux heures en arrière ont déjà été enregistrées
+                past_two_hours_exists_in_csv = not df_existing[(df_existing['time'] >= two_hours_ago) & (df_existing['time'] < now)].empty
+                if not past_two_hours_exists_in_csv:
+                    # Si les deux heures en arrière n'ont pas encore été enregistrées, ajouter seulement les données de ces deux heures
+                    try:
+                        # Vérifiez si le fichier existe pour déterminer si nous devons écrire l'en-tête
+                        write_header = not os.path.exists(csv_filename)
+
+                        # Enregistrer les données dans un CSV
+                        past_two_hours_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
+                        await log_message(f"Enregistrement des données dans le CSV")
+                
+                    except Exception as e:
+                        await log_message(f"Error in writing data to csv in get_weather_data: {str(e)}")
+
                 # Filtrer les données pour garder seulement celles de l'heure précédente
                 hour_ago = now - pd.Timedelta(hours=1)
                 past_hour_df = df[(df['time'] >= hour_ago) & (df['time'] < now)]
@@ -123,7 +142,7 @@ async def get_weather_data():
 
                 # Filtrer les données pour garder seulement des 7 prochaines heures
                 seven_hours_later = now + pd.Timedelta(hours=7)
-                next_seven_hours_df = df[(df['time'] > now) & (df['time'] < seven_hours_later)]
+                next_seven_hours_df = df[(df['time'] > now) & (df['time'] <= seven_hours_later)]
 
                 # Retourner les données pour les utiliser dans d'autres fonctions
                 return next_seven_hours_df
@@ -163,15 +182,15 @@ async def check_weather():
 
         # Si le df est vide, on peut simplement retourner 
         retry_count = 0  # Compteur pour le nombre de tentatives
-        while df.empty and retry_count < 5:  # Limite le nombre de tentatives à 5
+        while df.empty and retry_count < 2:  # Limite le nombre de tentatives à 2
             await log_message(f"No data obtained from get_weather_data in check_weather. Retry count: {retry_count}")
-            await asyncio.sleep(120)  # Attendez 120 secondes avant de réessayer
+            await asyncio.sleep(300)  # Attendez 300 secondes avant de réessayer
             df = await get_weather_data()
             retry_count += 1
 
         # Si après 5 tentatives, aucune donnée n'est obtenue, log l'erreur et return
         if df.empty:
-            await log_message(f"No data obtained from get_weather_data in check_weather after 5 attempts.")
+            await log_message(f"No data obtained from get_weather_data in check_weather after 2 attempts.")
             return
     
         # Vérifier les conditions d'alerte
@@ -205,12 +224,12 @@ async def check_weather():
                     sent_alerts['uv_index'] = time.date()
 
             # Vérifier les conditions de pression
-            if len(df) >= 7:
+            if len(df) >= 6:
                 pressure_drop = df['pressure_msl'].iloc[0] - df['pressure_msl'].iloc[5]
                 if pressure_drop >= 1.2:
-                    if sent_alerts['pressure'] != time.date():
-                        await send_alert(f"Alerte météo : Baisse rapide de la pression atmosphérique prévue de {pressure_drop} hPa sur 7 heures à partir de {time}.", row, 'pressure')
-                        sent_alerts['pressure'] = time.date()
+                    if sent_alerts['pressure_msl'] != time.date():
+                        await send_alert(f"Alerte météo : Baisse rapide de la pression atmosphérique prévue de {pressure_drop} hPa sur 6 heures à partir de {time}.", row, 'pressure_msl')
+                        sent_alerts['pressure_msl'] = time.date()
     
     except Exception as e:
         await log_message(f"Error in check_weather: {str(e)}")    

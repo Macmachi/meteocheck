@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.1.3
+* VERSIONS : 1.1.4
 * NOTES : None
 *
 '''
@@ -228,7 +228,7 @@ async def check_weather():
                 pressure_drop = df['pressure_msl'].iloc[0] - df['pressure_msl'].iloc[5]
                 if pressure_drop >= 1.2:
                     if sent_alerts['pressure_msl'] != time.date():
-                        await send_alert(f"Alerte météo : Baisse rapide de la pression atmosphérique prévue de {pressure_drop} hPa sur 6 heures à partir de {time}.", row, 'pressure_msl')
+                        await send_alert(f"Alerte météo : Baisse rapide de la pression atmosphérique prévue de {round(pressure_drop, 2)} hPa sur 6 heures à partir de {time}.", row, 'pressure_msl')
                         sent_alerts['pressure_msl'] = time.date()
     
     except Exception as e:
@@ -256,6 +256,12 @@ async def check_records(row, alert_column):
     max_value = df[alert_column].max()
     if row[alert_column] > max_value:
         await send_alert(f"Alerte météo : Nouveau record de {alert_column} à {row[alert_column]} à {row['time']}.")
+
+    # Vérifier si la valeur est inférieure au minimum pour la colonne "température"
+    if alert_column == 'temperature':
+        min_value = df[alert_column].min()
+        if row[alert_column] < min_value:
+            await send_alert(f"Alerte météo : Nouveau minimum de {alert_column} à {row[alert_column]} à {row['time']}.")
 
 async def end_of_month_summary():
     try:

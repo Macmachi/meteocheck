@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.1.4
+* VERSIONS : 1.1.5
 * NOTES : None
 *
 '''
@@ -106,46 +106,35 @@ async def get_weather_data():
                 two_hours_ago = now - pd.Timedelta(hours=2)
                 past_two_hours_df = df[(df['time'] >= two_hours_ago) & (df['time'] < now)]
 
-                # Vérifier si les deux heures en arrière ont déjà été enregistrées
-                past_two_hours_exists_in_csv = not df_existing[(df_existing['time'] >= two_hours_ago) & (df_existing['time'] < now)].empty
-                if not past_two_hours_exists_in_csv:
-                    # Si les deux heures en arrière n'ont pas encore été enregistrées, ajouter seulement les données de ces deux heures
-                    try:
-                        # Vérifiez si le fichier existe pour déterminer si nous devons écrire l'en-tête
-                        write_header = not os.path.exists(csv_filename)
-
-                        # Enregistrer les données dans un CSV
-                        past_two_hours_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
-                        await log_message(f"Enregistrement des données dans le CSV")
-                
-                    except Exception as e:
-                        await log_message(f"Error in writing data to csv in get_weather_data: {str(e)}")
-
                 # Filtrer les données pour garder seulement celles de l'heure précédente
                 hour_ago = now - pd.Timedelta(hours=1)
                 past_hour_df = df[(df['time'] >= hour_ago) & (df['time'] < now)]
-                
-                # Vérifier si l'heure précédente a déjà été enregistrée
-                past_hour_exists_in_csv = not df_existing[df_existing['time'] == hour_ago].empty
-                if not past_hour_exists_in_csv:
-                    # Si l'heure précédente n'a pas encore été enregistrée, ajouter seulement les données de l'heure précédente
-                    try:
-                        # Vérifiez si le fichier existe pour déterminer si nous devons écrire l'en-tête
-                        write_header = not os.path.exists(csv_filename)
 
-                        # Enregistrer les données dans un CSV
-                        past_hour_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
-                        await log_message(f"Enregistrement des données dans le CSV")
-                
-                    except Exception as e:
-                        await log_message(f"Error in writing data to csv in get_weather_data: {str(e)}")
+                # Vérifiez si le fichier existe pour déterminer si nous devons écrire l'en-tête
+                write_header = not os.path.exists(csv_filename)
 
+                # Vérifier si il y a un chevauchement entre les données de l'heure précédente et les données des deux heures passées
+                common_times = pd.merge(past_two_hours_df['time'], past_hour_df['time'])
+                if not common_times.empty:
+                    # Si un chevauchement existe, écrire seulement past_hour_df dans le CSV
+                    past_hour_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
+                else:
+                    # Si aucun chevauchement n'existe, écrire past_two_hours_df et past_hour_df dans le CSV
+                    past_two_hours_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
+                    past_hour_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
+
+                await log_message(f"Enregistrement des données dans le CSV")
+                
                 # Filtrer les données pour garder seulement des 7 prochaines heures
                 seven_hours_later = now + pd.Timedelta(hours=7)
                 next_seven_hours_df = df[(df['time'] > now) & (df['time'] <= seven_hours_later)]
 
-                # Retourner les données pour les utiliser dans d'autres fonctions
-                return next_seven_hours_df
+                # Filtrer les données pour garder seulement les 24 prochaines heures
+                twenty_four_hours_later = now + pd.Timedelta(hours=24)
+                next_twenty_four_hours_df = df[(df['time'] > now) & (df['time'] <= twenty_four_hours_later)]
+
+                # Retourner les données pour les utiliser dans d'autres fonctions et Retourner les données pour les utiliser dans d'autres fonctions
+                return next_seven_hours_df, next_twenty_four_hours_df
 
     except Exception as e:
         await log_message(f"Error in get_weather_data: {str(e)}")
@@ -178,23 +167,23 @@ async def check_weather():
     await log_message(f"Fonction check_weather executée")
     try:
         # Ajout du mot clé 'await' pour obtenir les données météo
-        df = await get_weather_data()
+        df_next_seven_hours, df_next_twenty_four_hours = await get_weather_data()
 
-        # Si le df est vide, on peut simplement retourner 
+        # Si les df sont vides, on peut simplement retourner 
         retry_count = 0  # Compteur pour le nombre de tentatives
-        while df.empty and retry_count < 2:  # Limite le nombre de tentatives à 2
+        while df_next_seven_hours.empty and df_next_twenty_four_hours.empty and retry_count < 2:  # Limite le nombre de tentatives à 2 # type: ignore # type: ignore
             await log_message(f"No data obtained from get_weather_data in check_weather. Retry count: {retry_count}")
             await asyncio.sleep(300)  # Attendez 300 secondes avant de réessayer
-            df = await get_weather_data()
+            df_next_seven_hours, df_next_twenty_four_hours = await get_weather_data()
             retry_count += 1
 
-        # Si après 5 tentatives, aucune donnée n'est obtenue, log l'erreur et return
-        if df.empty:
+        # Si après 2 tentatives, aucune donnée n'est obtenue, log l'erreur et return
+        if df_next_seven_hours.empty and df_next_twenty_four_hours.empty: # type: ignore
             await log_message(f"No data obtained from get_weather_data in check_weather after 2 attempts.")
             return
-    
-        # Vérifier les conditions d'alerte
-        for i, row in df.iterrows():
+
+        # Vérifier les conditions d'alerte pour les 7 prochaines heures
+        for i, row in df_next_seven_hours.iterrows(): # type: ignore
             # Convertir le temps unix en un objet datetime pour faciliter les comparaisons
             time = pd.to_datetime(row['time'], unit='s')
             
@@ -223,16 +212,21 @@ async def check_weather():
                     await send_alert(f"Alerte météo : Index UV prévu de {row['uv_index']} à {time}.", row, 'uv_index')
                     sent_alerts['uv_index'] = time.date()
 
+        # Vérifier les conditions d'alerte pour les 24 prochaines heures
+        for i, row in df_next_twenty_four_hours.iterrows(): # type: ignore
+            # Convertir le temps unix en un objet datetime pour faciliter les comparaisons
+            time = pd.to_datetime(row['time'], unit='s')
+            
             # Vérifier les conditions de pression
-            if len(df) >= 6:
-                pressure_drop = df['pressure_msl'].iloc[0] - df['pressure_msl'].iloc[5]
-                if pressure_drop >= 1.2:
+            if len(df_next_twenty_four_hours) >= 24: # type: ignore
+                pressure_drop = df_next_twenty_four_hours['pressure_msl'].iloc[0] - df_next_twenty_four_hours['pressure_msl'].iloc[23] # type: ignore
+                if pressure_drop >= 20:
                     if sent_alerts['pressure_msl'] != time.date():
-                        await send_alert(f"Alerte météo : Baisse rapide de la pression atmosphérique prévue de {round(pressure_drop, 2)} hPa sur 6 heures à partir de {time}.", row, 'pressure_msl')
+                        await send_alert(f"Alerte météo : Risque de bombe météorologique détecté. Baisse de pression prévue de {round(pressure_drop, 2)} hPa sur 24 heures à partir de {time}.", row, 'pressure_msl')
                         sent_alerts['pressure_msl'] = time.date()
     
     except Exception as e:
-        await log_message(f"Error in check_weather: {str(e)}")    
+        await log_message(f"Error in check_weather: {str(e)}")
 
 async def check_records(row, alert_column):
     # Lire toutes les données

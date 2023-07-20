@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.1.5
+* VERSIONS : 1.1.6
 * NOTES : None
 *
 '''
@@ -64,6 +64,29 @@ sent_alerts = {
     'pressure_msl': None
 }
 
+async def send_alert(message, row=None, alert_column=None):
+    if row is not None and alert_column is not None:
+        await check_records(row, alert_column)
+
+    try:
+        # Lire le fichier json pour obtenir tous les IDs de chat
+        with open('chat_ids.json', 'r') as file:
+            chats = json.load(file)
+
+        for chat_id in chats:
+            success = False
+            while not success:
+                try:
+                    await bot.send_message(chat_id=chat_id, text=message)
+                    success = True  # Si l'envoi du message est réussi, marquer comme réussi et sortir de la boucle while
+                except exceptions.TelegramAPIError as e:
+                    print(f"Erreur rencontrée lors de l'envoi du message au chat {chat_id} : {e}")
+                    await asyncio.sleep(1)  # attendre une seconde avant de réessayer
+                
+        await log_message(f"Sent alert: {message}")
+    except Exception as e:
+        await log_message(f"Error in send_alert: {str(e)}")
+
 async def get_weather_data():
     try:
         # Arrondir l'heure actuelle à l'heure précise dès le début
@@ -115,15 +138,25 @@ async def get_weather_data():
 
                 # Vérifier si il y a un chevauchement entre les données de l'heure précédente et les données des deux heures passées
                 common_times = pd.merge(past_two_hours_df['time'], past_hour_df['time'])
+
                 if not common_times.empty:
                     # Si un chevauchement existe, écrire seulement past_hour_df dans le CSV
-                    past_hour_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
+                    # Avant d'écrire, vérifier si les lignes existent déjà
+                    past_hour_df = past_hour_df[~past_hour_df['time'].isin(df_existing['time'])]
+                    if not past_hour_df.empty:
+                        past_hour_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
+                        await log_message(f"Enregistrement des données dans le CSV")
                 else:
                     # Si aucun chevauchement n'existe, écrire past_two_hours_df et past_hour_df dans le CSV
-                    past_two_hours_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
-                    past_hour_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
-
-                await log_message(f"Enregistrement des données dans le CSV")
+                    # Avant d'écrire, vérifier si les lignes existent déjà
+                    past_two_hours_df = past_two_hours_df[~past_two_hours_df['time'].isin(df_existing['time'])]
+                    past_hour_df = past_hour_df[~past_hour_df['time'].isin(df_existing['time'])]
+                    if not past_two_hours_df.empty:
+                        past_two_hours_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
+                        await log_message(f"Enregistrement des données dans le CSV")
+                    if not past_hour_df.empty:
+                        past_hour_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
+                        await log_message(f"Enregistrement des données dans le CSV")
                 
                 # Filtrer les données pour garder seulement des 7 prochaines heures
                 seven_hours_later = now + pd.Timedelta(hours=7)
@@ -133,36 +166,13 @@ async def get_weather_data():
                 twenty_four_hours_later = now + pd.Timedelta(hours=24)
                 next_twenty_four_hours_df = df[(df['time'] > now) & (df['time'] <= twenty_four_hours_later)]
 
-                # Retourner les données pour les utiliser dans d'autres fonctions et Retourner les données pour les utiliser dans d'autres fonctions
+                # Retourner les données pour les utiliser dans d'autres fonctions
                 return next_seven_hours_df, next_twenty_four_hours_df
 
     except Exception as e:
         await log_message(f"Error in get_weather_data: {str(e)}")
         return pd.DataFrame()
     
-async def send_alert(message, row=None, alert_column=None):
-    if row is not None and alert_column is not None:
-        await check_records(row, alert_column)
-
-    try:
-        # Lire le fichier json pour obtenir tous les IDs de chat
-        with open('chat_ids.json', 'r') as file:
-            chats = json.load(file)
-
-        for chat_id in chats:
-            success = False
-            while not success:
-                try:
-                    await bot.send_message(chat_id=chat_id, text=message)
-                    success = True  # Si l'envoi du message est réussi, marquer comme réussi et sortir de la boucle while
-                except exceptions.TelegramAPIError as e:
-                    print(f"Erreur rencontrée lors de l'envoi du message au chat {chat_id} : {e}")
-                    await asyncio.sleep(1)  # attendre une seconde avant de réessayer
-                
-        await log_message(f"Sent alert: {message}")
-    except Exception as e:
-        await log_message(f"Error in send_alert: {str(e)}")
-
 async def check_weather():
     await log_message(f"Fonction check_weather executée")
     try:

@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.2.1
+* VERSIONS : 1.3.0
 * NOTES : None
 *
 '''
@@ -33,7 +33,7 @@ bot = Bot(token=TOKEN_TELEGRAM)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
 # Définir l'URL de l'API météo
-weather_url = "https://api.open-meteo.com/v1/forecast?latitude=46.2838&longitude=6.1621&hourly=temperature_2m,precipitation_probability,precipitation,pressure_msl,windspeed_10m,uv_index&timezone=Europe%2FBerlin&forecast_days=2&models=best_match&timeformat=unixtime"
+weather_url = "https://api.open-meteo.com/v1/forecast?latitude=46.2838&longitude=6.1621&hourly=temperature_2m,precipitation_probability,precipitation,pressure_msl,windspeed_10m,uv_index&timezone=GMT&forecast_days=2&past_days=2&models=best_match&timeformat=unixtime"
 
 # Définir le nom du fichier CSV où stocker les données
 csv_filename = "weather_data.csv"
@@ -117,23 +117,21 @@ async def get_weather_data():
                 })
 
                 # Convertir le temps unix en un objet datetime pour faciliter les comparaisons
-                df['time'] = pd.to_datetime(df['time'], unit='s').dt.tz_localize('Europe/Berlin')
-                # Arrondir les heures dans la DataFrame
-                df['time'] = df['time'].dt.floor('H')
+                df['time'] = pd.to_datetime(df['time'], unit='s').dt.tz_localize('GMT').dt.tz_convert('Europe/Berlin').dt.floor('H')
 
                 # Lire le fichier csv existant
                 df_existing = pd.read_csv(csv_filename)
                 df_existing['time'] = pd.to_datetime(df_existing['time'])
 
-                # Créez un DataFrame pour les 7 dernières heures sans l'heure actuelle d'où le < now et non pas <= !
-                seven_hours_ago = now - pd.Timedelta(hours=7)
-                last_seven_hours_df = df[(df['time'] >= seven_hours_ago) & (df['time'] < now)]
+                # Créez un DataFrame pour les 24 dernières heures sans l'heure actuelle d'où le < now et non pas <= !
+                twenty_four_hours_ago = now - pd.Timedelta(hours=24)
+                last_twenty_four_hours_df = df[(df['time'] >= twenty_four_hours_ago) & (df['time'] < now)]
 
                 # Vérifiez si le fichier existe pour déterminer si nous devons écrire l'en-tête
                 write_header = not os.path.exists(csv_filename)
 
                 # Vérifiez si ces données existent déjà dans le fichier CSV
-                missing_data = last_seven_hours_df[~last_seven_hours_df['time'].isin(df_existing['time'])]
+                missing_data = last_twenty_four_hours_df[~last_twenty_four_hours_df['time'].isin(df_existing['time'])]
 
                 # S'il manque des données, ajoutez-les au fichier CSV
                 if not missing_data.empty:

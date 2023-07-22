@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.1.6
+* VERSIONS : 1.2.0
 * NOTES : None
 *
 '''
@@ -33,7 +33,7 @@ bot = Bot(token=TOKEN_TELEGRAM)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
 # Définir l'URL de l'API météo
-weather_url = "https://api.open-meteo.com/v1/forecast?latitude=46.2838&longitude=6.1621&hourly=temperature_2m,precipitation_probability,precipitation,pressure_msl,windspeed_10m,uv_index&timezone=Europe%2FBerlin&forecast_days=1&models=best_match&timeformat=unixtime"
+weather_url = "https://api.open-meteo.com/v1/forecast?latitude=46.2838&longitude=6.1621&hourly=temperature_2m,precipitation_probability,precipitation,pressure_msl,windspeed_10m,uv_index&timezone=Europe%2FBerlin&forecast_days=2&models=best_match&timeformat=unixtime"
 
 # Définir le nom du fichier CSV où stocker les données
 csv_filename = "weather_data.csv"
@@ -125,39 +125,21 @@ async def get_weather_data():
                 df_existing = pd.read_csv(csv_filename)
                 df_existing['time'] = pd.to_datetime(df_existing['time'])
 
-                # Filtrer les données pour garder seulement celles de deux heures en arrière
-                two_hours_ago = now - pd.Timedelta(hours=2)
-                past_two_hours_df = df[(df['time'] >= two_hours_ago) & (df['time'] < now)]
-
-                # Filtrer les données pour garder seulement celles de l'heure précédente
-                hour_ago = now - pd.Timedelta(hours=1)
-                past_hour_df = df[(df['time'] >= hour_ago) & (df['time'] < now)]
+                # Créez un DataFrame pour les 7 dernières heures
+                seven_hours_ago = now - pd.Timedelta(hours=7)
+                last_seven_hours_df = df[(df['time'] >= seven_hours_ago) & (df['time'] <= now)]
 
                 # Vérifiez si le fichier existe pour déterminer si nous devons écrire l'en-tête
                 write_header = not os.path.exists(csv_filename)
 
-                # Vérifier si il y a un chevauchement entre les données de l'heure précédente et les données des deux heures passées
-                common_times = pd.merge(past_two_hours_df['time'], past_hour_df['time'])
+                # Vérifiez si ces données existent déjà dans le fichier CSV
+                missing_data = last_seven_hours_df[~last_seven_hours_df['time'].isin(df_existing['time'])]
 
-                if not common_times.empty:
-                    # Si un chevauchement existe, écrire seulement past_hour_df dans le CSV
-                    # Avant d'écrire, vérifier si les lignes existent déjà
-                    past_hour_df = past_hour_df[~past_hour_df['time'].isin(df_existing['time'])]
-                    if not past_hour_df.empty:
-                        past_hour_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
-                        await log_message(f"Enregistrement des données dans le CSV")
-                else:
-                    # Si aucun chevauchement n'existe, écrire past_two_hours_df et past_hour_df dans le CSV
-                    # Avant d'écrire, vérifier si les lignes existent déjà
-                    past_two_hours_df = past_two_hours_df[~past_two_hours_df['time'].isin(df_existing['time'])]
-                    past_hour_df = past_hour_df[~past_hour_df['time'].isin(df_existing['time'])]
-                    if not past_two_hours_df.empty:
-                        past_two_hours_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
-                        await log_message(f"Enregistrement des données dans le CSV")
-                    if not past_hour_df.empty:
-                        past_hour_df.to_csv(csv_filename, mode='a', header=write_header, index=False)
-                        await log_message(f"Enregistrement des données dans le CSV")
-                
+                # S'il manque des données, ajoutez-les au fichier CSV
+                if not missing_data.empty:
+                    missing_data.to_csv(csv_filename, mode='a', header=write_header, index=False)
+                    await log_message(f"Enregistrement des données manquantes dans le CSV")
+
                 # Filtrer les données pour garder seulement des 7 prochaines heures
                 seven_hours_later = now + pd.Timedelta(hours=7)
                 next_seven_hours_df = df[(df['time'] > now) & (df['time'] <= seven_hours_later)]
@@ -183,7 +165,7 @@ async def check_weather():
         retry_count = 0  # Compteur pour le nombre de tentatives
         while df_next_seven_hours.empty and df_next_twenty_four_hours.empty and retry_count < 2:  # Limite le nombre de tentatives à 2 # type: ignore # type: ignore
             await log_message(f"No data obtained from get_weather_data in check_weather. Retry count: {retry_count}")
-            await asyncio.sleep(300)  # Attendez 300 secondes avant de réessayer
+            await asyncio.sleep(60)  # Attendez 60 secondes avant de réessayer
             df_next_seven_hours, df_next_twenty_four_hours = await get_weather_data()
             retry_count += 1
 

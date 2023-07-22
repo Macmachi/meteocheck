@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.2.0
+* VERSIONS : 1.2.1
 * NOTES : None
 *
 '''
@@ -125,9 +125,9 @@ async def get_weather_data():
                 df_existing = pd.read_csv(csv_filename)
                 df_existing['time'] = pd.to_datetime(df_existing['time'])
 
-                # Créez un DataFrame pour les 7 dernières heures
+                # Créez un DataFrame pour les 7 dernières heures sans l'heure actuelle d'où le < now et non pas <= !
                 seven_hours_ago = now - pd.Timedelta(hours=7)
-                last_seven_hours_df = df[(df['time'] >= seven_hours_ago) & (df['time'] <= now)]
+                last_seven_hours_df = df[(df['time'] >= seven_hours_ago) & (df['time'] < now)]
 
                 # Vérifiez si le fichier existe pour déterminer si nous devons écrire l'en-tête
                 write_header = not os.path.exists(csv_filename)
@@ -161,17 +161,9 @@ async def check_weather():
         # Ajout du mot clé 'await' pour obtenir les données météo
         df_next_seven_hours, df_next_twenty_four_hours = await get_weather_data()
 
-        # Si les df sont vides, on peut simplement retourner 
-        retry_count = 0  # Compteur pour le nombre de tentatives
-        while df_next_seven_hours.empty and df_next_twenty_four_hours.empty and retry_count < 2:  # Limite le nombre de tentatives à 2 # type: ignore # type: ignore
-            await log_message(f"No data obtained from get_weather_data in check_weather. Retry count: {retry_count}")
-            await asyncio.sleep(60)  # Attendez 60 secondes avant de réessayer
-            df_next_seven_hours, df_next_twenty_four_hours = await get_weather_data()
-            retry_count += 1
-
         # Si après 2 tentatives, aucune donnée n'est obtenue, log l'erreur et return
         if df_next_seven_hours.empty and df_next_twenty_four_hours.empty: # type: ignore
-            await log_message(f"No data obtained from get_weather_data in check_weather after 2 attempts.")
+            await log_message(f"Aucune donnée obtenue à partir de get_weather_data dans check_weather! Nouvelle vérification la prochaine heure.")
             return
 
         # Vérifier les conditions d'alerte pour les 7 prochaines heures

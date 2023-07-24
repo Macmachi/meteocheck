@@ -24,6 +24,7 @@ import json
 import os
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
+os.chdir(script_dir)
 config_path = os.path.join(script_dir, 'config.ini')
 
 config = configparser.ConfigParser()

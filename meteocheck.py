@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.3.1
+* VERSIONS : 1.3.2
 * NOTES : None
 *
 '''
@@ -21,10 +21,13 @@ import sys
 import traceback
 import configparser
 import json
+import os
+
+script_dir = os.path.dirname(os.path.realpath(__file__))
+config_path = os.path.join(script_dir, 'config.ini')
 
 config = configparser.ConfigParser()
-# read the content of the config.ini file
-config.read('config.ini')  
+config.read(config_path)
 
 TOKEN_TELEGRAM = config['KEYS']['TELEGRAM_BOT_TOKEN']
 # Créer le bot Telegram

@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.3.0
+* VERSIONS : 1.3.1
 * NOTES : None
 *
 '''
@@ -173,25 +173,30 @@ async def check_weather():
             if row['temperature'] > 35 or row['temperature'] < -10:
                 # Vérifier si une alerte a déjà été envoyée pour ce jour
                 if sent_alerts['temperature'] != time.date():
-                    await send_alert(f"Alerte météo : Température prévue de {row['temperature']}°C à {time}.", row, 'temperature')
+                    await send_alert(f"Alerte météo : Température prévue de {row['temperature']}°C à {time} à Versoix.", row, 'temperature')
                     sent_alerts['temperature'] = time.date()
             
             # Vérifier les conditions de précipitations
-            if row['precipitation_probability'] > 80 and row['precipitation'] > 5:
+            if row['precipitation_probability'] > 80 and row['precipitation'] > 8 :
                 if sent_alerts['precipitation'] != time.date():
-                    await send_alert(f"Alerte météo : Précipitations prévues de {row['precipitation']}mm à {time}.", row, 'precipitation')
+                    await send_alert(f"Alerte météo : Fortes pluies prévues de {row['precipitation']}mm à {time} à Versoix.", row, 'precipitation')
                     sent_alerts['precipitation'] = time.date()
 
             # Vérifier les conditions de vent
-            if row['windspeed'] > 30:
+            if row['windspeed'] > 60 and row['windspeed'] <= 75:
                 if sent_alerts['windspeed'] != time.date():
-                    await send_alert(f"Alerte météo : Vent prévu de {row['windspeed']}km/h à {time}.", row, 'windspeed')
+                    await send_alert(f"Alerte météo : Vent fort prévu de {row['windspeed']}km/h à {time} à Versoix.", row, 'windspeed')
+                    sent_alerts['windspeed'] = time.date()
+
+            if row['windspeed'] > 75:
+                if sent_alerts['windspeed'] != time.date():
+                    await send_alert(f"Alerte météo : Vent tempétueux prévu de {row['windspeed']}km/h à {time} à Versoix.", row, 'windspeed')
                     sent_alerts['windspeed'] = time.date()
 
             # Vérifier les conditions d'index UV
             if row['uv_index'] > 8:
                 if sent_alerts['uv_index'] != time.date():
-                    await send_alert(f"Alerte météo : Index UV prévu de {row['uv_index']} à {time}.", row, 'uv_index')
+                    await send_alert(f"Alerte météo : Index UV prévu de {row['uv_index']} à {time} à Versoix.", row, 'uv_index')
                     sent_alerts['uv_index'] = time.date()
 
         # Vérifier les conditions d'alerte pour les 24 prochaines heures

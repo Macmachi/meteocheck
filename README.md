@@ -11,5 +11,6 @@
 ### 🔗 Useful Links
 * 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).
 
-### 🆕 Upcoming Features
-* 💧 Adding humidity tracking.
+## 🚀 Upcoming Features or Changes
+* 💧 Humidity tracking will be added.
+* 🔍 Records will be based on recorded measurements, not on forecasts for the upcoming hours.

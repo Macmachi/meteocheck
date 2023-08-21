@@ -13,4 +13,4 @@
 * 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).
 
 ## 🚀 Upcoming Features or Changes
-* None
+* Add the recent 'humidity' parameter to the monthly and annual reports

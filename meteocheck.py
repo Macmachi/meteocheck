@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.3.2
+* VERSIONS : 1.3.3
 * NOTES : None
 *
 '''
@@ -37,7 +37,7 @@ bot = Bot(token=TOKEN_TELEGRAM)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
 # Définir l'URL de l'API météo
-weather_url = "https://api.open-meteo.com/v1/forecast?latitude=46.2838&longitude=6.1621&hourly=temperature_2m,precipitation_probability,precipitation,pressure_msl,windspeed_10m,uv_index&timezone=GMT&forecast_days=2&past_days=2&models=best_match&timeformat=unixtime"
+weather_url = "https://api.open-meteo.com/v1/forecast?latitude=46.2838&longitude=6.1621&hourly=temperature_2m,precipitation_probability,precipitation,pressure_msl,windspeed_10m,uv_index,relativehumidity_2m&timezone=GMT&forecast_days=2&past_days=2&models=best_match&timeformat=unixtime"
 
 # Définir le nom du fichier CSV où stocker les données
 csv_filename = "weather_data.csv"
@@ -45,7 +45,7 @@ csv_filename = "weather_data.csv"
 # Vérifiez si le fichier existe, sinon créez-le.
 if not os.path.exists(csv_filename):
     # Créer un DataFrame vide avec les bonnes colonnes
-    df = pd.DataFrame(columns=['time', 'temperature', 'precipitation_probability', 'precipitation', 'windspeed', 'uv_index', 'pressure_msl'])
+    df = pd.DataFrame(columns=['time', 'temperature', 'precipitation_probability', 'precipitation', 'windspeed', 'uv_index', 'pressure_msl', 'humidity'])
     # Enregistrer le DataFrame vide dans un CSV
     df.to_csv(csv_filename, index=False)
 
@@ -108,6 +108,7 @@ async def get_weather_data():
                 windspeed = data['hourly']['windspeed_10m']
                 uv_index = data['hourly']['uv_index']
                 pressure_msl = data['hourly']['pressure_msl']  
+                humidity = data['hourly']['relativehumidity_2m']
 
                 # Créer un DataFrame avec les données
                 df = pd.DataFrame({
@@ -117,7 +118,8 @@ async def get_weather_data():
                     'precipitation': precipitation,
                     'windspeed': windspeed,
                     'uv_index': uv_index,
-                    'pressure_msl': pressure_msl   
+                    'pressure_msl': pressure_msl, 
+                    'humidity': humidity  
                 })
 
                 # Convertir le temps unix en un objet datetime pour faciliter les comparaisons
@@ -240,13 +242,13 @@ async def check_records(row, alert_column):
     # Vérifier le record pour la colonne d'alerte
     max_value = df[alert_column].max()
     if row[alert_column] > max_value:
-        await send_alert(f"Alerte météo : Nouveau record de {alert_column} à {row[alert_column]} à {row['time']}.")
+        await send_alert(f"Alerte météo : Nouveau record annuel possible de {alert_column} à {row[alert_column]} à {row['time']}.")
 
     # Vérifier si la valeur est inférieure au minimum pour la colonne "température"
     if alert_column == 'temperature':
         min_value = df[alert_column].min()
         if row[alert_column] < min_value:
-            await send_alert(f"Alerte météo : Nouveau minimum de {alert_column} à {row[alert_column]} à {row['time']}.")
+            await send_alert(f"Alerte météo : Nouveau record minimum annuel possible de {alert_column} à {row[alert_column]} à {row['time']}.")
 
 async def end_of_month_summary():
     try:

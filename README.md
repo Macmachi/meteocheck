@@ -15,3 +15,5 @@
 ## 🚀 Upcoming Features or Changes
 * Add the recent 'humidity' parameter to the monthly and annual reports
 * Adding a command to view the weather forecasts and one to see the last entry in the csv (past hour)
+* Calculation of the number of sunshine hours per month.
+* Improvement of the reports to include the concerned city and add the humidity rate for the monthly record, as well as the number of sunshine hours per month.

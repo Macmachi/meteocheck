@@ -13,6 +13,7 @@
 * 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).
 
 ## 🚀 Upcoming Features or Changes
+* Set the rain alerts to 20 mm
 * Add the recent 'humidity' parameter to the monthly and annual reports
 * Adding a command to view the weather forecasts and one to see the last entry in the csv (past hour)
 * Calculation of the number of sunshine hours per month.

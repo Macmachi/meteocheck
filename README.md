@@ -8,7 +8,7 @@
   * Monitoring the atmospheric pressure for the next 2️⃣4️⃣ hours.
   * For each type of alert, an alert is sent only once a day
 * 📊 Dispatches monthly and yearly weather summaries.
-* [NEW] Command to view the last entry in the csv (past hour)
+* [NEW] Command /weather to view the last entry in the csv (past hour)
 
 ### 🔗 Useful Links
 * 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).

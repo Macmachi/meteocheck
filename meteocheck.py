@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.3.3
+* VERSIONS : 1.3.4
 * NOTES : None
 *
 '''
@@ -31,6 +31,8 @@ config = configparser.ConfigParser()
 config.read(config_path)
 
 TOKEN_TELEGRAM = config['KEYS']['TELEGRAM_BOT_TOKEN']
+# Variable globale pour la ville
+VILLE = "Versoix"
 # Créer le bot Telegram
 bot = Bot(token=TOKEN_TELEGRAM)
 # Ajouté un chat_id
@@ -183,7 +185,7 @@ async def check_weather():
                     sent_alerts['temperature'] = time.date()
             
             # Vérifier les conditions de précipitations
-            if row['precipitation_probability'] > 80 and row['precipitation'] > 8 :
+            if row['precipitation_probability'] > 80 and row['precipitation'] > 15 :
                 if sent_alerts['precipitation'] != time.date():
                     await send_alert(f"Alerte météo : Fortes pluies prévues de {row['precipitation']}mm à {time} à Versoix.", row, 'precipitation')
                     sent_alerts['precipitation'] = time.date()
@@ -326,11 +328,13 @@ async def schedule_jobs():
         try:
             await check_weather()
             now = datetime.datetime.now()
-            if now.day == 1 and now.hour == 0:
+            # Vérification pour la fin de mois avec une tolérance d'une minute
+            if now.day == 1 and now.hour == 0 and now.minute < 1:
                 await end_of_month_summary()
-            elif now.month == 12 and now.day == 31 and now.hour == 0:
+            # Vérification pour la fin d'année avec une tolérance d'une minute
+            elif now.month == 12 and now.day == 31 and now.hour == 0 and now.minute < 1:
                 await end_of_year_summary()
-            await asyncio.sleep(3600)
+            await asyncio.sleep(60)  # Exécution toutes les minutes
         except Exception as e:
             await log_message(f"Error in schedule_jobs: {str(e)}")
 
@@ -354,6 +358,26 @@ async def start_command(message: types.Message):
             json.dump(chats, file)
     
     await message.reply("Bot started!")
+
+@dp.message_handler(commands='météo')
+async def get_latest_info_command(message: types.Message):
+    try:
+        # Lire le CSV et obtenir la dernière ligne
+        df = pd.read_csv(csv_filename)
+        if df.empty:
+            await message.reply("Aucune donnée disponible.")
+        else:
+            latest_info = df.iloc[-1].to_dict()
+            latest_info['time'] = latest_info['time'].strftime("%Y-%m-%d %H:%M:%S")
+            response = f"Dernières informations météo pour {VILLE} :\n"
+            for key, value in latest_info.items():
+                response += f"{key}: {value}\n"
+            await message.reply(response)
+    except Exception as e:
+        await message.reply(f"Erreur lors de l'obtention des informations : {str(e)}")
+        await log_message(f"Error in get_latest_info_command: {str(e)}")
+
+dp.register_message_handler(get_latest_info_command, commands='météo')
 
 if __name__ == "__main__":
     from aiogram import executor

@@ -32,7 +32,7 @@ config.read(config_path)
 
 TOKEN_TELEGRAM = config['KEYS']['TELEGRAM_BOT_TOKEN']
 # Variable globale pour la ville
-VILLE = "Versoix"
+VILLE = ""
 # Créer le bot Telegram
 bot = Bot(token=TOKEN_TELEGRAM)
 # Ajouté un chat_id

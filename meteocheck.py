@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.3.4
+* VERSIONS : 1.3.5
 * NOTES : None
 *
 '''
@@ -359,7 +359,7 @@ async def start_command(message: types.Message):
     
     await message.reply("Bot started!")
 
-@dp.message_handler(commands='météo')
+@dp.message_handler(commands='weather')
 async def get_latest_info_command(message: types.Message):
     try:
         # Lire le CSV et obtenir la dernière ligne
@@ -368,16 +368,32 @@ async def get_latest_info_command(message: types.Message):
             await message.reply("Aucune donnée disponible.")
         else:
             latest_info = df.iloc[-1].to_dict()
-            latest_info['time'] = latest_info['time'].strftime("%Y-%m-%d %H:%M:%S")
+            latest_info['time'] = pd.to_datetime(latest_info['time']).strftime("%Y-%m-%d %H:%M:%S")
             response = f"Dernières informations météo pour {VILLE} :\n"
             for key, value in latest_info.items():
-                response += f"{key}: {value}\n"
+                # Ajout des unités spécifiques pour chaque mesure
+                if key == 'temperature':
+                    response += f"Température: {value}°C\n"
+                elif key == 'precipitation_probability':
+                    response += f"Probabilité de précipitation: {value}%\n"
+                elif key == 'precipitation':
+                    response += f"Précipitation: {value}mm\n"
+                elif key == 'windspeed':
+                    response += f"Vitesse du vent: {value}km/h\n"
+                elif key == 'uv_index':
+                    response += f"Indice UV: {value}\n"
+                elif key == 'pressure_msl':
+                    response += f"Pression au niveau de la mer: {value} hPa\n"
+                elif key == 'humidity':
+                    response += f"Humidité: {value}%\n"
+                else:
+                    response += f"{key}: {value}\n"
             await message.reply(response)
     except Exception as e:
         await message.reply(f"Erreur lors de l'obtention des informations : {str(e)}")
         await log_message(f"Error in get_latest_info_command: {str(e)}")
 
-dp.register_message_handler(get_latest_info_command, commands='météo')
+dp.register_message_handler(get_latest_info_command, commands='weather')
 
 if __name__ == "__main__":
     from aiogram import executor

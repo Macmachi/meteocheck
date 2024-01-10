@@ -8,14 +8,14 @@
   * Monitoring the atmospheric pressure for the next 2️⃣4️⃣ hours.
   * For each type of alert, an alert is sent only once a day
 * 📊 Dispatches monthly and yearly weather summaries.
+* [NEW] Command to view the last entry in the csv (past hour)
 
 ### 🔗 Useful Links
 * 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).
 
 ## 🚀 Upcoming Features or Changes
 * Better support for the transition between summer and winter time.
-* Set the rain alerts to 20 mm
 * Add the recent 'humidity' parameter to the monthly and annual reports
-* Adding a command to view the weather forecasts and one to see the last entry in the csv (past hour)
+* Adding a command to view the weather forecasts 
 * Calculation of the number of sunshine hours per month.
 * Improvement of the reports to include the concerned city and add the humidity rate for the monthly record, as well as the number of sunshine hours per month.

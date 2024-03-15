@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.3.5
+* VERSIONS : 1.3.6
 * NOTES : None
 *
 '''
@@ -32,7 +32,7 @@ config.read(config_path)
 
 TOKEN_TELEGRAM = config['KEYS']['TELEGRAM_BOT_TOKEN']
 # Variable globale pour la ville
-VILLE = ""
+VILLE = "Versoix"
 # Créer le bot Telegram
 bot = Bot(token=TOKEN_TELEGRAM)
 # Ajouté un chat_id
@@ -98,7 +98,7 @@ async def get_weather_data():
         # Arrondir l'heure actuelle à l'heure précise dès le début
         now = pd.Timestamp.now(tz='Europe/Berlin').floor('H')
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
             async with session.get(weather_url) as resp:
                 data = await resp.json()
 
@@ -255,32 +255,50 @@ async def check_records(row, alert_column):
 async def end_of_month_summary():
     try:
         df = pd.read_csv(csv_filename)
+
+        # Supprimer les éventuelles valeurs manquantes dans la colonne 'time'
+        df = df.dropna(subset=['time'])
+
+        # Convertir la colonne 'time' en type datetime
         df['time'] = pd.to_datetime(df['time'])
 
+        # Vérifier le type de la colonne 'time'
+        await log_message(f"Time column dtype: {df['time'].dtype}")
+
+        # Récupérer le mois en cours
         current_month = df['time'].dt.to_period('M').max()
+
+        # Filtrer le DataFrame pour garder seulement les données du mois en cours
         df = df[df['time'].dt.to_period('M') == current_month]
 
-        # Group by day and sum precipitation for each day
+        # Grouper les données par jour et calculer la somme des précipitations pour chaque jour
         df['day'] = df['time'].dt.date
         df['daily_precipitation'] = df.groupby('day')['precipitation'].transform('sum')
 
+        # Définir l'index du DataFrame comme étant la colonne 'day'
         df.set_index('day', inplace=True)
 
+        # Trouver le jour le plus chaud
         hot_day = df['temperature'].idxmax()
-        max_temp = df.loc[hot_day, 'temperature'].max() # type: ignore
+        max_temp = df.loc[hot_day, 'temperature'].max()
 
+        # Trouver le jour le plus froid
         cold_day = df['temperature'].idxmin()
-        min_temp = df.loc[cold_day, 'temperature'].min() # type: ignore
+        min_temp = df.loc[cold_day, 'temperature'].min()
 
+        # Trouver le jour avec le plus de pluie
         rain_day = df['daily_precipitation'].idxmax()
-        max_precipitation = df.loc[rain_day, 'daily_precipitation'].max() # type: ignore
+        max_precipitation = df.loc[rain_day, 'daily_precipitation'].max()
 
+        # Trouver le jour avec le plus fort index UV
         uv_day = df['uv_index'].idxmax()
-        max_uv_index = df.loc[uv_day, 'uv_index'].max() # type: ignore
+        max_uv_index = df.loc[uv_day, 'uv_index'].max()
 
+        # Compter le nombre de jours de pluie
         rain_threshold = 0.1
         rainy_days = df[df['daily_precipitation'] > rain_threshold].index.nunique()
 
+        # Envoyer le résumé de fin de mois
         await send_alert(f"Résumé de fin de mois : Le jour le plus chaud était {hot_day} avec {max_temp}°C. Le jour le plus froid était {cold_day} avec {min_temp}°C. Le jour avec le plus de pluie était {rain_day} avec {max_precipitation}mm. Le jour avec le plus fort index UV était {uv_day} avec un index de {max_uv_index}. Le nombre de jours de pluie était {rainy_days}.")
 
     except Exception as e:

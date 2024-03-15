@@ -13,6 +13,9 @@
 ### 🔗 Useful Links
 * 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).
 
+## 🪱 Bug
+* Don't send the monthly report on Telegram due to this bug: Error in end_of_month_summary: Can only use .dt accessor with datetimelike values. (monitored)
+
 ## 🚀 Upcoming Features or Changes
 * Better support for the transition between summer and winter time.
 * Add the recent 'humidity' parameter to the monthly and annual reports

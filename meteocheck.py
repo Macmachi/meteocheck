@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.3.6
+* VERSIONS : 1.3.7
 * NOTES : None
 *
 '''
@@ -96,7 +96,7 @@ async def send_alert(message, row=None, alert_column=None):
 async def get_weather_data():
     try:
         # Arrondir l'heure actuelle à l'heure précise dès le début
-        now = pd.Timestamp.now(tz='Europe/Berlin').floor('H')
+        now = pd.Timestamp.now(tz='Europe/Berlin').floor('h')
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
             async with session.get(weather_url) as resp:
@@ -125,11 +125,11 @@ async def get_weather_data():
                 })
 
                 # Convertir le temps unix en un objet datetime pour faciliter les comparaisons
-                df['time'] = pd.to_datetime(df['time'], unit='s').dt.tz_localize('GMT').dt.tz_convert('Europe/Berlin').dt.floor('H')
+                df['time'] = pd.to_datetime(df['time'], unit='s', utc=True).dt.tz_convert('Europe/Berlin').dt.floor('h')
 
                 # Lire le fichier csv existant
                 df_existing = pd.read_csv(csv_filename)
-                df_existing['time'] = pd.to_datetime(df_existing['time'])
+                df_existing['time'] = pd.to_datetime(df_existing['time'], utc=True)
 
                 # Créez un DataFrame pour les 24 dernières heures sans l'heure actuelle d'où le < now et non pas <= !
                 twenty_four_hours_ago = now - pd.Timedelta(hours=24)

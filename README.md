@@ -9,15 +9,17 @@
   * For each type of alert, an alert is sent only once a day
 * 📊 Dispatches monthly and yearly weather summaries.
 * [NEW] Command /weather to view the last entry in the csv (past hour)
+* [NEW] Command /month to view report of the month (last 30 days)
+* [NEW] Command /year to view report of the year (last 365 days)
 
 ### 🔗 Useful Links
 * 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).
 
 ## 🪱 Bug
-* Don't send the monthly report on Telegram due to this bug: Error in end_of_month_summary: Can only use .dt accessor with datetimelike values. (monitored)
+* None
 
 ## 🚀 Upcoming Features or Changes
-* Better support for the transition between summer and winter time.
+*[Done] Better support for the transition between summer and winter time. :heavy_check_mark:
 * Add the recent 'humidity' parameter to the monthly and annual reports
 * Adding a command to view the weather forecasts 
 * Calculation of the number of sunshine hours per month.

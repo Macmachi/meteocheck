@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.4.1
+* VERSIONS : 1.5.0
 * NOTES : None
 *
 '''
@@ -54,6 +54,7 @@ async def log_message(message: str):
     async with aiofiles.open("log_meteocheck.log", mode='a') as f:
         await f.write(f"{datetime.datetime.now(pytz.UTC)} - {message}\n")
 
+#Permet de vérifier la structure des colonnes et de time au lancement du script
 def clean_csv_file():
     try:
         df = pd.read_csv(csv_filename)
@@ -252,30 +253,29 @@ async def check_weather():
             time = row['time'].tz_convert('Europe/Berlin')
             if row['temperature_2m'] > 35 or row['temperature_2m'] < -10:
                 if sent_alerts['temperature'] != time.date():
-                    await send_alert(f"Alerte météo : Température prévue de {row['temperature_2m']}°C à {time} à Versoix.", row, 'temperature_2m')
+                    emoji = "🔥" if row['temperature_2m'] > 35 else "❄️"
+                    await send_alert(f"{emoji} Alerte météo : Température prévue de {row['temperature_2m']}°C à {time} à Versoix.", row, 'temperature_2m')
                     sent_alerts['temperature'] = time.date()
             if row['precipitation_probability'] > 80 and row['precipitation'] > 15:
                 if sent_alerts['precipitation'] != time.date():
-                    await send_alert(f"Alerte météo : Fortes pluies prévues de {row['precipitation']}mm à {time} à Versoix.", row, 'precipitation')
+                    await send_alert(f"🌧️ Alerte météo : Fortes pluies prévues de {row['precipitation']}mm à {time} à Versoix.", row, 'precipitation')
                     sent_alerts['precipitation'] = time.date()
-            if row['windspeed_10m'] > 60 and row['windspeed_10m'] <= 75:
+            if row['windspeed_10m'] > 60:
                 if sent_alerts['windspeed'] != time.date():
-                    await send_alert(f"Alerte météo : Vent fort prévu de {row['windspeed_10m']}km/h à {time} à Versoix.", row, 'windspeed_10m')
-                    sent_alerts['windspeed'] = time.date()
-            if row['windspeed_10m'] > 75:
-                if sent_alerts['windspeed'] != time.date():
-                    await send_alert(f"Alerte météo : Vent tempétueux prévu de {row['windspeed_10m']}km/h à {time} à Versoix.", row, 'windspeed_10m')
+                    emoji = "🌪️" if row['windspeed_10m'] > 75 else "💨"
+                    wind_type = "tempétueux" if row['windspeed_10m'] > 75 else "fort"
+                    await send_alert(f"{emoji} Alerte météo : Vent {wind_type} prévu de {row['windspeed_10m']}km/h à {time} à Versoix.", row, 'windspeed_10m')
                     sent_alerts['windspeed'] = time.date()
             if row['uv_index'] > 8:
                 if sent_alerts['uv_index'] != time.date():
-                    await send_alert(f"Alerte météo : Index UV prévu de {row['uv_index']} à {time} à Versoix.", row, 'uv_index')
+                    await send_alert(f"☀️ Alerte météo : Index UV prévu de {row['uv_index']} à {time} à Versoix.", row, 'uv_index')
                     sent_alerts['uv_index'] = time.date()
         if len(df_next_twenty_four_hours) >= 24:
             pressure_drop = df_next_twenty_four_hours['pressure_msl'].iloc[0] - df_next_twenty_four_hours['pressure_msl'].iloc[23]
             if pressure_drop >= 20:
                 time = df_next_twenty_four_hours['time'].iloc[0].tz_convert('Europe/Berlin')
                 if sent_alerts['pressure_msl'] != time.date():
-                    await send_alert(f"Alerte météo : Risque de bombe météorologique détecté. Baisse de pression prévue de {round(pressure_drop, 2)} hPa sur 24 heures à partir de {time}.", df_next_twenty_four_hours.iloc[0], 'pressure_msl')
+                    await send_alert(f"🌪️ Alerte météo : Risque de bombe météorologique détecté. Baisse de pression prévue de {round(pressure_drop, 2)} hPa sur 24 heures à partir de {time}.", df_next_twenty_four_hours.iloc[0], 'pressure_msl')
                     sent_alerts['pressure_msl'] = time.date()
     except Exception as e:
         await log_message(f"Error in check_weather: {str(e)}")
@@ -291,12 +291,36 @@ async def check_records(row, alert_column):
     max_value = df[alert_column].max()
     if row[alert_column] > max_value:
         time = row['time'].tz_convert('Europe/Berlin')
-        await send_alert(f"Alerte météo : Nouveau record annuel possible de {alert_column} à {row[alert_column]} à {time}.")
+        await send_alert(f"🏆 Alerte météo : Nouveau record annuel possible de {alert_column} à {row[alert_column]} à {time}.")
     if alert_column == 'temperature_2m':
         min_value = df[alert_column].min()
         if row[alert_column] < min_value:
             time = row['time'].tz_convert('Europe/Berlin')
-            await send_alert(f"Alerte météo : Nouveau record minimum annuel possible de {alert_column} à {row[alert_column]} à {time}.")
+            await send_alert(f"🏆 Alerte météo : Nouveau record minimum annuel possible de {alert_column} à {row[alert_column]} à {time}.")
+
+def calculate_sunshine_hours(df):
+    # Convertir l'heure en heure locale
+    df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
+    
+    # Définir les heures de jour (approximativement de 5h à 23h)
+    df['is_daytime'] = (df['local_time'].dt.hour >= 6) & (df['local_time'].dt.hour < 21)
+    
+    # Considérer comme ensoleillé si :
+    # - C'est le jour
+    # - L'indice UV est supérieur à 2
+    # - La probabilité de précipitation est inférieure à 50% (pas inclu mais pourrait être inclu)
+    df['is_sunny'] = (df['is_daytime'] & 
+                      (df['uv_index'] > 2))
+    
+    # Compter les heures ensoleillées
+    sunshine_hours = df['is_sunny'].sum()
+    
+    return sunshine_hours
+
+def calculate_monthly_sunshine(df):
+    # Grouper par mois et calculer les heures d'ensoleillement pour chaque mois
+    monthly_sunshine = df.groupby(df['time'].dt.to_period('M')).apply(calculate_sunshine_hours)
+    return monthly_sunshine
 
 def generate_summary(df):
     # Assurez-vous que le DataFrame est en UTC
@@ -306,6 +330,8 @@ def generate_summary(df):
     df['day'] = df['time'].dt.date
     df['daily_precipitation'] = df.groupby('day')['precipitation'].transform('sum')
     
+    sunshine_hours = calculate_sunshine_hours(df)
+
     hot_day = df.loc[df['temperature_2m'].idxmax(), 'time']
     max_temp = df['temperature_2m'].max()
     cold_day = df.loc[df['temperature_2m'].idxmin(), 'time']
@@ -320,6 +346,10 @@ def generate_summary(df):
     rainy_days = df[df['daily_precipitation'] > rain_threshold]['day'].nunique()
     avg_temp = df['temperature_2m'].mean()
     total_precipitation = df['precipitation'].sum()
+    humid_day = df.loc[df['relativehumidity_2m'].idxmax(), 'time']
+    max_humidity = df['relativehumidity_2m'].max()
+    dry_day = df.loc[df['relativehumidity_2m'].idxmin(), 'time']
+    min_humidity = df['relativehumidity_2m'].min()
 
     # Convertir les dates en 'Europe/Berlin' uniquement pour l'affichage
     hot_day_berlin = hot_day.tz_convert('Europe/Berlin').strftime("%Y-%m-%d")
@@ -327,17 +357,22 @@ def generate_summary(df):
     rain_day_berlin = rain_day.tz_convert('Europe/Berlin').strftime("%Y-%m-%d")
     uv_day_berlin = uv_day.tz_convert('Europe/Berlin').strftime("%Y-%m-%d")
     wind_day_berlin = wind_day.tz_convert('Europe/Berlin').strftime("%Y-%m-%d")
+    humid_day_berlin = humid_day.tz_convert('Europe/Berlin').strftime("%Y-%m-%d")
+    dry_day_berlin = dry_day.tz_convert('Europe/Berlin').strftime("%Y-%m-%d")
 
     # Créer le résumé avec les dates converties
-    summary = f"Jour le plus chaud: {hot_day_berlin} ({max_temp:.1f}°C)\n"
-    summary += f"Jour le plus froid: {cold_day_berlin} ({min_temp:.1f}°C)\n"
-    summary += f"Jour le plus pluvieux: {rain_day_berlin} ({max_precipitation:.1f}mm)\n"
-    summary += f"Jour avec l'index UV le plus élevé: {uv_day_berlin} (index {max_uv_index:.1f})\n"
-    summary += f"Jour le plus venteux: {wind_day_berlin} ({max_wind_speed:.1f} km/h)\n"
-    summary += f"Nombre de jours de pluie: {rainy_days}\n"
-    summary += f"Température moyenne: {avg_temp:.1f}°C\n"
-    summary += f"Précipitations totales: {total_precipitation:.1f}mm"
-    
+    summary = f"🌡️ Jour le plus chaud: {hot_day_berlin} ({max_temp:.1f}°C)\n"
+    summary += f"❄️ Jour le plus froid: {cold_day_berlin} ({min_temp:.1f}°C)\n"
+    summary += f"🌧️ Jour le plus pluvieux: {rain_day_berlin} ({max_precipitation:.1f}mm)\n"
+    summary += f"☀️ Jour avec l'index UV le plus élevé: {uv_day_berlin} (index {max_uv_index:.1f})\n"
+    summary += f"💨 Jour le plus venteux: {wind_day_berlin} ({max_wind_speed:.1f} km/h)\n"
+    summary += f"🌂 Nombre de jours de pluie: {rainy_days}\n"
+    summary += f"🌡️ Température moyenne: {avg_temp:.1f}°C\n"
+    summary += f"💧 Précipitations totales: {total_precipitation:.1f}mm\n"
+    summary += f"💦 Jour le plus humide: {humid_day_berlin} ({max_humidity:.1f}%)\n"
+    summary += f"🏜️ Jour le plus sec: {dry_day_berlin} ({min_humidity:.1f}%)\n"
+    summary += f"☀️ Heures d'ensoleillement estimées: {sunshine_hours:.1f} heures\n"
+
     return summary
 
 @dp.message_handler(commands='start')
@@ -391,6 +426,46 @@ async def get_latest_info_command(message: types.Message):
     except Exception as e:
         await log_message(f"Error in get_latest_info_command: {str(e)}")
         await message.reply(f"Erreur lors de l'obtention des informations : {str(e)}")
+
+@dp.message_handler(commands='forecast')
+async def get_forecast(message: types.Message):
+    try:
+        df_next_seven_hours, _ = await get_weather_data()
+        if df_next_seven_hours.empty:
+            await message.reply("Aucune donnée de prévision disponible.")
+            return
+        
+        forecast = df_next_seven_hours.head(6)
+        response = f"Prévisions météo pour les 6 prochaines heures à {VILLE}:\n\n"
+        
+        for _, row in forecast.iterrows():
+            time = row['time'].tz_convert('Europe/Berlin').strftime("%H:%M")
+            response += f"{time}: {row['temperature_2m']:.1f}°C, "
+            response += f"Précip: {row['precipitation']:.1f}mm ({row['precipitation_probability']}%), "
+            response += f"Vent: {row['windspeed_10m']:.1f}km/h, "
+            response += f"UV: {row['uv_index']:.1f}, "
+            response += f"Humidité: {row['relativehumidity_2m']}%\n"
+        
+        await message.reply(response)
+    except Exception as e:
+        await log_message(f"Error in get_forecast: {str(e)}")
+        await message.reply("Erreur lors de l'obtention des prévisions.")
+
+@dp.message_handler(commands='sunshine')
+async def get_sunshine_summary(message: types.Message):
+    try:
+        df = pd.read_csv(csv_filename)
+        df['time'] = pd.to_datetime(df['time'], utc=True)
+        monthly_sunshine = calculate_monthly_sunshine(df)
+        
+        response = "Résumé mensuel de l'ensoleillement :\n\n"
+        for month, hours in monthly_sunshine.items():
+            response += f"{month}: {hours:.1f} heures\n"
+        
+        await message.reply(response)
+    except Exception as e:
+        await log_message(f"Error in get_sunshine_summary: {str(e)}")
+        await message.reply("Erreur lors de l'obtention du résumé de l'ensoleillement.")
 
 @dp.message_handler(commands='month')
 async def get_month_summary(message: types.Message):

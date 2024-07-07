@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.4.0
+* VERSIONS : 1.4.1
 * NOTES : None
 *
 '''
@@ -40,7 +40,7 @@ csv_filename = "weather_data.csv"
 
 # Initialize CSV file if not exists
 if not os.path.exists(csv_filename):
-    df = pd.DataFrame(columns=['time', 'temperature_2m', 'precipitation_probability', 'precipitation', 'windspeed_10m', 'uv_index', 'pressure_msl', 'relativehumidity_2m'])
+    df = pd.DataFrame(columns=['time', 'temperature_2m', 'precipitation_probability', 'precipitation', 'pressure_msl', 'windspeed_10m', 'uv_index', 'relativehumidity_2m'])
     df.to_csv(csv_filename, index=False)
 
 # Logging functions
@@ -53,6 +53,29 @@ sys.excepthook = log_uncaught_exceptions
 async def log_message(message: str):
     async with aiofiles.open("log_meteocheck.log", mode='a') as f:
         await f.write(f"{datetime.datetime.now(pytz.UTC)} - {message}\n")
+
+def clean_csv_file():
+    try:
+        df = pd.read_csv(csv_filename)
+        correct_columns = ['time', 'temperature_2m', 'precipitation_probability', 'precipitation', 'pressure_msl', 'windspeed_10m', 'uv_index', 'relativehumidity_2m']
+        
+        # Réorganiser les colonnes selon l'ordre correct
+        df = df.reindex(columns=correct_columns)
+        
+        # Convertir la colonne time en datetime
+        df['time'] = pd.to_datetime(df['time'], utc=True)
+        
+        # Trier par date
+        df = df.sort_values('time')
+        
+        # Convertir toutes les dates au format "2024-07-07T05:00:00Z"
+        df['time'] = df['time'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        
+        # Écrire le DataFrame nettoyé dans le fichier CSV
+        df.to_csv(csv_filename, index=False)
+        print("Fichier CSV nettoyé avec succès.")
+    except Exception as e:
+        print(f"Erreur lors du nettoyage du fichier CSV : {str(e)}")
 
 # Alert tracking
 sent_alerts = {
@@ -190,22 +213,25 @@ async def get_weather_data():
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
             async with session.get(weather_url) as resp:
                 data = await resp.json()
-                df = pd.DataFrame(data['hourly'])
+                columns = ['time', 'temperature_2m', 'precipitation_probability', 'precipitation', 'pressure_msl', 'windspeed_10m', 'uv_index', 'relativehumidity_2m']
+                df = pd.DataFrame({col: data['hourly'][col] for col in columns})
                 df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
                 
-                # Lecture du CSV existant avec un parser personnalisé
-                df_existing = pd.read_csv(csv_filename)
-                df_existing['time'] = pd.to_datetime(df_existing['time'], format='%Y-%m-%dT%H:%M:%SZ', utc=True)
+                # Lecture du CSV existant
+                if os.path.exists(csv_filename):
+                    df_existing = pd.read_csv(csv_filename)
+                    df_existing['time'] = pd.to_datetime(df_existing['time'], utc=True)
+                else:
+                    df_existing = pd.DataFrame(columns=columns)
                 
                 twenty_four_hours_ago = now - pd.Timedelta(hours=24)
                 last_twenty_four_hours_df = df[(df['time'] >= twenty_four_hours_ago) & (df['time'] < now)]
-                write_header = not os.path.exists(csv_filename)
                 missing_data = last_twenty_four_hours_df[~last_twenty_four_hours_df['time'].isin(df_existing['time'])]
                 if not missing_data.empty:
-                    # Formater les nouvelles dates au format "2024-07-07T08:00:00Z"
                     missing_data.loc[:, 'time'] = missing_data['time'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-                    missing_data.to_csv(csv_filename, mode='a', header=write_header, index=False)
+                    missing_data.to_csv(csv_filename, mode='a', header=not os.path.exists(csv_filename), index=False)
                     await log_message(f"Enregistrement des données manquantes dans le CSV")
+                
                 seven_hours_later = now + pd.Timedelta(hours=7)
                 next_seven_hours_df = df[(df['time'] > now) & (df['time'] <= seven_hours_later)]
                 twenty_four_hours_later = now + pd.Timedelta(hours=24)
@@ -220,7 +246,7 @@ async def check_weather():
     try:
         df_next_seven_hours, df_next_twenty_four_hours = await get_weather_data()
         if df_next_seven_hours.empty and df_next_twenty_four_hours.empty:
-            await log_message(f"Aucune donnée obtenue à partir de get_weather_data dans check_weather! Nouvelle vérification la prochaine heure.")
+            await log_message(f"Aucune donnée obtenue à partir de get_weather_data dans check_weather! Nouvelle vérification dans 1 minute.")
             return
         for _, row in df_next_seven_hours.iterrows():
             time = row['time'].tz_convert('Europe/Berlin')
@@ -377,6 +403,7 @@ async def get_year_summary(message: types.Message):
 # Main execution
 if __name__ == "__main__":
     from aiogram import executor
+    clean_csv_file()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.create_task(schedule_jobs()) 

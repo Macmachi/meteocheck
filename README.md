@@ -16,7 +16,7 @@
 * 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).
 
 ## 🪱 Bug
-* None
+* BUG des valeurs enregistrer dans le csv ?!
 
 ## 🚀 Upcoming Features or Changes
 * [✅] Improved support for the transition between summer and winter time.  (v1.4)

@@ -18,7 +18,8 @@
 * 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).
 
 ## 🪱 Bug
-
+* none
+  
 ## 🚀 Upcoming Features or Changes
 * [✅] Improved support for the transition between summer and winter time.  
 * [✅] Add the recently introduced 'humidity' parameter to monthly and annual reports, including the least humid and most humid days.

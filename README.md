@@ -19,7 +19,7 @@
 * None
 
 ## 🚀 Upcoming Features or Changes
-* [ :heavy_check_mark: (v1.4)] Better support for the transition between summer and winter time.
+* [:heavy_check_mark:] Better support for the transition between summer and winter time. (v1.4)
 * Add the recent 'humidity' parameter to the monthly and annual reports
 * Adding a command to view the weather forecasts 
 * Calculation of the number of sunshine hours per month.

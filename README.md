@@ -27,3 +27,4 @@
 * [✅] Calculate the number of sunshine hours per day for the monthly report and per month for the annual report, based on UV values.
 * [✅] Add emojis for reports.
 * Add command to view a report on all recorded data and also for sunshine?
+* Add custom command to view a report between two dates

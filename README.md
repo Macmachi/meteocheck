@@ -18,7 +18,7 @@
 * 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).
 
 ## 🪱 Bug
-* none
+* [FutureWarning] Setting an item of incompatible dtype is deprecated and will raise in a future error of pandas. Value '['2024-07-07T22:00:00Z']' has dtype incompatible with datetime64[ns, UTC], please explicitly cast to a compatible dtype first
   
 ## 🚀 Upcoming Features or Changes
 * [✅] Improved support for the transition between summer and winter time.  

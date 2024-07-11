@@ -28,4 +28,4 @@
 * [✅] Add emojis for reports.
 * Improved presentation for information with /weather and forecast commands, such as monthly or yearly reports.
 * Add command to view a report on all recorded data and also for sunshine?
-* Add a custom command to view a report between two dates, and if no data is available, display "No data available for the selected period"
+* [Nice to have] Add a custom command to view a report between two dates, and if no data is available, display "No data available for the selected period"

@@ -26,5 +26,6 @@
 * [✅] Add a command to view weather forecasts for the upcoming 6 hours.
 * [✅] Calculate the number of sunshine hours per day for the monthly report and per month for the annual report, based on UV values.
 * [✅] Add emojis for reports.
+* Improved presentation for information with /weather and forecast commands, such as monthly or yearly reports.
 * Add command to view a report on all recorded data and also for sunshine?
 * Add a custom command to view a report between two dates, and if no data is available, display "No data available for the selected period"

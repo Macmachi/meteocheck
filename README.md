@@ -28,5 +28,6 @@
 * [Nice to have] Add a custom command to view a report between two dates, and if no data is available, display "No data available for the selected period"
 
 ## 🪱 Bug
-* [FutureWarning] Setting an item of incompatible dtype is deprecated and will raise in a future error of pandas. Value '['2024-07-07T22:00:00Z']' has dtype incompatible with datetime64[ns, UTC], please explicitly cast to a compatible dtype first
+* Check logs
+* [FutureWarning] Setting an item of incompatible dtype is deprecated and will raise in a future error of pandas. Value '['2024-07-07T22:00:00Z']' has dtype incompatible with datetime64[ns, UTC], please explicitly cast to a compatible dtype first 
   

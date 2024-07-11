@@ -17,9 +17,6 @@
 ### 🔗 Useful Links
 * 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).
 
-## 🪱 Bug
-* [FutureWarning] Setting an item of incompatible dtype is deprecated and will raise in a future error of pandas. Value '['2024-07-07T22:00:00Z']' has dtype incompatible with datetime64[ns, UTC], please explicitly cast to a compatible dtype first
-  
 ## 🚀 Upcoming Features or Changes
 * [✅] Improved support for the transition between summer and winter time.  
 * [✅] Add the recently introduced 'humidity' parameter to monthly and annual reports, including the least humid and most humid days.
@@ -29,3 +26,7 @@
 * Improved presentation for information with /weather and forecast commands, such as monthly or yearly reports.
 * Add command to view a report on all recorded data and also for sunshine?
 * [Nice to have] Add a custom command to view a report between two dates, and if no data is available, display "No data available for the selected period"
+
+## 🪱 Bug
+* [FutureWarning] Setting an item of incompatible dtype is deprecated and will raise in a future error of pandas. Value '['2024-07-07T22:00:00Z']' has dtype incompatible with datetime64[ns, UTC], please explicitly cast to a compatible dtype first
+  

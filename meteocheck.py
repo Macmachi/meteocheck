@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.5.0
+* VERSIONS : 1.6.0
 * NOTES : None
 *
 '''
@@ -208,6 +208,46 @@ async def send_year_summary(chat_id):
         await log_message(f"Erreur inattendue dans send_year_summary: {str(e)}")
         await bot.send_message(chat_id, "Une erreur inattendue s'est produite lors de la génération du résumé annuel.")
 
+async def send_all_summary(chat_id):
+    try:
+        await log_message(f"Début de send_all_summary pour chat_id: {chat_id}")
+        
+        # Lecture du CSV
+        df = pd.read_csv(csv_filename)
+        await log_message("CSV lu avec succès")
+        
+        # Conversion des dates
+        df['time'] = pd.to_datetime(df['time'], utc=True)
+        await log_message("Conversion des dates effectuée")
+        
+        if df.empty:
+            await log_message("Aucune donnée disponible")
+            await bot.send_message(chat_id, "Pas de données disponibles.")
+            return
+        
+        summary = generate_summary(df)
+        await log_message("Résumé généré avec succès")
+        
+        message = f"Résumé de toutes les données météo pour {VILLE}:\n\n{summary}"
+        await bot.send_message(chat_id, message)
+        await log_message(f"Résumé complet envoyé avec succès à chat_id: {chat_id}")
+    
+    except pd.errors.EmptyDataError:
+        error_msg = "Le fichier CSV est vide ou mal formaté"
+        await log_message(error_msg)
+        await bot.send_message(chat_id, f"Erreur : {error_msg}")
+    except FileNotFoundError:
+        error_msg = f"Le fichier {csv_filename} n'a pas été trouvé"
+        await log_message(error_msg)
+        await bot.send_message(chat_id, f"Erreur : {error_msg}")
+    except aiohttp.ClientError as e:
+        error_msg = f"Erreur de connexion lors de l'envoi du message: {str(e)}"
+        await log_message(error_msg)
+        await bot.send_message(chat_id, "Erreur de connexion. Veuillez réessayer plus tard.")
+    except Exception as e:
+        await log_message(f"Erreur inattendue dans send_all_summary: {str(e)}")
+        await bot.send_message(chat_id, "Une erreur inattendue s'est produite lors de la génération du résumé complet.")
+
 async def get_weather_data():
     try:
         now = pd.Timestamp.now(tz='UTC').floor('h')
@@ -229,7 +269,8 @@ async def get_weather_data():
                 last_twenty_four_hours_df = df[(df['time'] >= twenty_four_hours_ago) & (df['time'] < now)]
                 missing_data = last_twenty_four_hours_df[~last_twenty_four_hours_df['time'].isin(df_existing['time'])]
                 if not missing_data.empty:
-                    missing_data.loc[:, 'time'] = missing_data['time'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    #old version with warning : missing_data.loc[:, 'time'] = missing_data['time'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    missing_data.loc[:, 'time'] = pd.to_datetime(missing_data['time']).dt.strftime('%Y-%m-%dT%H:%M:%SZ')
                     missing_data.to_csv(csv_filename, mode='a', header=not os.path.exists(csv_filename), index=False)
                     await log_message(f"Enregistrement des données manquantes dans le CSV")
                 
@@ -318,8 +359,15 @@ def calculate_sunshine_hours(df):
     return sunshine_hours
 
 def calculate_monthly_sunshine(df):
-    # Grouper par mois et calculer les heures d'ensoleillement pour chaque mois
-    monthly_sunshine = df.groupby(df['time'].dt.to_period('M')).apply(calculate_sunshine_hours)
+    # Assurez-vous que la colonne 'time' est en UTC
+    df['time'] = df['time'].dt.tz_convert('UTC')
+    
+    # Grouper par année et mois sans perdre l'information de fuseau horaire
+    monthly_sunshine = df.groupby([df['time'].dt.year, df['time'].dt.month]).apply(calculate_sunshine_hours)
+    
+    # Créer un index plus lisible
+    monthly_sunshine.index = pd.to_datetime(monthly_sunshine.index.map(lambda x: f"{x[0]}-{x[1]:02d}-01")).strftime('%Y-%m')
+    
     return monthly_sunshine
 
 def generate_summary(df):
@@ -378,24 +426,48 @@ def generate_summary(df):
 @dp.message_handler(commands='start')
 async def start_command(message: types.Message):
     chat_id = message.chat.id
+    is_new_user = True
+    
     if os.path.exists('chat_ids.json'):
         with open('chat_ids.json', 'r') as file:
             chats = json.load(file)
-        if chat_id not in chats:
+        if chat_id in chats:
+            is_new_user = False
+        else:
             chats.append(chat_id)
-            with open('chat_ids.json', 'w') as file:
-                json.dump(chats, file)
     else:
         chats = [chat_id]
-        with open('chat_ids.json', 'w') as file:
-            json.dump(chats, file)
-    await message.reply("Bot started!")
+    
+    with open('chat_ids.json', 'w') as file:
+        json.dump(chats, file)
+    
+    if is_new_user:
+        welcome_message = (
+            "Bienvenue sur le bot météo de Versoix! 🌤️\n\n"
+            "Voici les commandes disponibles :\n"
+            "/weather - Obtenir les dernières informations météo\n"
+            "/forecast - Voir les prévisions pour les prochaines heures\n"
+            "/sunshine - Voir le résumé mensuel de l'ensoleillement\n"
+            "/month - Obtenir le résumé météo du mois dernier\n"
+            "/year - Obtenir le résumé météo de l'année en cours\n"
+            "/all - Obtenir le résumé météo de toutes les données disponibles\n\n"
+            "N'hésitez pas à utiliser ces commandes pour rester informé sur la météo à Versoix!"
+        )
+        await message.reply(welcome_message)
+    else:
+        welcome_back_message = (
+            "Vous avez déjà lancé le bot !\n\n"
+            "Mais voici un rappel des commandes disponibles :\n"
+            "/weather, /forecast, /sunshine, /month, /year, /all\n\n"
+            "Quelle information météo souhaitez-vous obtenir aujourd'hui?"
+        )
+        await message.reply(welcome_back_message)
 
 @dp.message_handler(commands='weather')
 async def get_latest_info_command(message: types.Message):
     try:
         await log_message("Début de get_latest_info_command")
-        
+                
         # Lire le CSV et obtenir la dernière ligne
         df = pd.read_csv(csv_filename)
         await log_message("CSV lu avec succès")
@@ -407,22 +479,19 @@ async def get_latest_info_command(message: types.Message):
             latest_info = df.iloc[-1].to_dict()
             latest_info['time'] = pd.to_datetime(latest_info['time'], utc=True).tz_convert('Europe/Berlin').strftime("%Y-%m-%d %H:%M:%S")
             
-            response = f"Dernières informations météo pour {VILLE} :\n"
-            response += f"Date et heure: {latest_info['time']}\n"
-            response += f"Température: {latest_info['temperature_2m']}°C\n"
-            response += f"Probabilité de précipitation: {latest_info['precipitation_probability']}%\n"
-            response += f"Précipitation: {latest_info['precipitation']}mm\n"
-            response += f"Vitesse du vent: {latest_info['windspeed_10m']}km/h\n"
-            response += f"Indice UV: {latest_info['uv_index']}\n"
-            response += f"Pression au niveau de la mer: {latest_info['pressure_msl']} hPa\n"
-            response += f"Humidité relative: {latest_info['relativehumidity_2m']}%\n"
+            response = f"🌡️ Météo actuelle à {VILLE} :\n\n"
+            response += f"📅 {latest_info['time']}\n\n"
+            response += f"🌡️ Température: {latest_info['temperature_2m']}°C\n"
+            response += f"🌧️ Probabilité de pluie: {latest_info['precipitation_probability']}%\n"
+            response += f"💧 Précipitations: {latest_info['precipitation']}mm\n"
+            response += f"💨 Vent: {latest_info['windspeed_10m']}km/h\n"
+            response += f"☀️ Indice UV: {latest_info['uv_index']}\n"
+            response += f"🌡️ Pression: {latest_info['pressure_msl']} hPa\n"
+            response += f"💦 Humidité: {latest_info['relativehumidity_2m']}%\n"
             
             await log_message("Réponse préparée, tentative d'envoi")
             await message.reply(response)
             await log_message("Réponse envoyée avec succès")
-    except aiohttp.ClientError as e:
-        await log_message(f"Erreur de connexion aiohttp: {str(e)}")
-        await message.reply("Erreur de connexion lors de l'envoi de la réponse. Veuillez réessayer plus tard.")
     except Exception as e:
         await log_message(f"Error in get_latest_info_command: {str(e)}")
         await message.reply(f"Erreur lors de l'obtention des informations : {str(e)}")
@@ -436,15 +505,27 @@ async def get_forecast(message: types.Message):
             return
         
         forecast = df_next_seven_hours.head(6)
-        response = f"Prévisions météo pour les 6 prochaines heures à {VILLE}:\n\n"
+        response = f"🔮 Prévisions météo pour {VILLE}\n\n"
         
         for _, row in forecast.iterrows():
             time = row['time'].tz_convert('Europe/Berlin').strftime("%H:%M")
-            response += f"{time}: {row['temperature_2m']:.1f}°C, "
-            response += f"Précip: {row['precipitation']:.1f}mm ({row['precipitation_probability']}%), "
-            response += f"Vent: {row['windspeed_10m']:.1f}km/h, "
-            response += f"UV: {row['uv_index']:.1f}, "
-            response += f"Humidité: {row['relativehumidity_2m']}%\n"
+            temp = row['temperature_2m']
+            precip = row['precipitation']
+            precip_prob = row['precipitation_probability']
+            wind = row['windspeed_10m']
+            uv = row['uv_index']
+            humidity = row['relativehumidity_2m']
+            
+            temp_emoji = "🥵" if temp > 30 else "🥶" if temp < 10 else "🌡️"
+            precip_emoji = "🌧️" if precip > 0 else "☀️"
+            wind_emoji = "🌬️" if wind > 20 else "🍃"
+            
+            response += f"⏰ {time}:\n"
+            response += f"{temp_emoji} {temp:.1f}°C | "
+            response += f"{precip_emoji} {precip:.1f}mm ({precip_prob}%) | "
+            response += f"{wind_emoji} {wind:.1f}km/h | "
+            response += f"☀️ UV: {uv:.1f} | "
+            response += f"💦 {humidity}%\n\n"
         
         await message.reply(response)
     except Exception as e:
@@ -474,6 +555,10 @@ async def get_month_summary(message: types.Message):
 @dp.message_handler(commands='year')
 async def get_year_summary(message: types.Message):
     await send_year_summary(message.chat.id)
+
+@dp.message_handler(commands='all')
+async def get_all_summary(message: types.Message):
+    await send_all_summary(message.chat.id)
 
 # Main execution
 if __name__ == "__main__":

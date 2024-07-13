@@ -31,4 +31,5 @@
 
 ## 🪱 Bug
 * Check logs
+* Warning nohup messages not hide yet!
   

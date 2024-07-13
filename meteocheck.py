@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.6.0
+* VERSIONS : 1.6.1
 * NOTES : None
 *
 '''
@@ -21,6 +21,13 @@ import traceback
 import configparser
 import json
 import pytz
+import warnings
+'''
+Evite le warning : 
+/root/scriptsar/meteocheck/meteocheck.py:273: FutureWarning: Setting an item of incompatible dtype is deprecated and will raise in a future error of pandas. Value '['2024-07-13T00:00:00Z']' has dtype incompatible with datetime64[ns, UTC], please explicitly cast to a compatible dtype first.
+  missing_data.loc[:, 'time'] = pd.to_datetime(missing_data['time']).dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+'''
+warnings.filterwarnings("ignore", category=FutureWarning, module="pandas")
 
 # Configuration and setup
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -106,6 +113,17 @@ async def send_alert(message, row=None, alert_column=None):
         await log_message(f"Sent alert: {message}")
     except Exception as e:
         await log_message(f"Error in send_alert: {str(e)}")
+
+async def start_polling(dispatcher: Dispatcher, timeout: int = 20, relax: float = 0.1, fast: bool = True):
+    max_retries = 5
+    for retry in range(max_retries):
+        try:
+            return await dispatcher.start_polling(timeout=timeout, relax=relax, fast=fast)
+        except aiogram.utils.exceptions.TelegramAPIError as e:
+            if "Bad Gateway" in str(e) and retry < max_retries - 1:
+                await asyncio.sleep(5)  # Attendre 5 secondes avant de réessayer
+            else:
+                raise
 
 async def send_message_with_retry(chat_id, message, max_retries=3):
     for attempt in range(max_retries):
@@ -567,4 +585,4 @@ if __name__ == "__main__":
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.create_task(schedule_jobs()) 
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=True, on_startup=start_polling)

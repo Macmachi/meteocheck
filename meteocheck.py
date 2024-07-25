@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.6.1
+* VERSIONS : 1.6.2
 * NOTES : None
 *
 '''
@@ -38,11 +38,16 @@ config = configparser.ConfigParser()
 config.read(config_path)
 
 TOKEN_TELEGRAM = config['KEYS']['TELEGRAM_BOT_TOKEN']
-VILLE = "Versoix"
+VILLE = config['LOCATION']['VILLE']
+LATITUDE = config['LOCATION']['LATITUDE']
+LONGITUDE = config['LOCATION']['LONGITUDE']
+
+# Utilisez ces valeurs pour construire l'URL de l'API météo
+weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&hourly=temperature_2m,precipitation_probability,precipitation,pressure_msl,windspeed_10m,uv_index,relativehumidity_2m&timezone=GMT&forecast_days=2&past_days=2&models=best_match&timeformat=unixtime"
+
 bot = Bot(token=TOKEN_TELEGRAM)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
-weather_url = "https://api.open-meteo.com/v1/forecast?latitude=46.2838&longitude=6.1621&hourly=temperature_2m,precipitation_probability,precipitation,pressure_msl,windspeed_10m,uv_index,relativehumidity_2m&timezone=GMT&forecast_days=2&past_days=2&models=best_match&timeformat=unixtime"
 csv_filename = "weather_data.csv"
 
 # Initialize CSV file if not exists
@@ -313,21 +318,21 @@ async def check_weather():
             if row['temperature_2m'] > 35 or row['temperature_2m'] < -10:
                 if sent_alerts['temperature'] != time.date():
                     emoji = "🔥" if row['temperature_2m'] > 35 else "❄️"
-                    await send_alert(f"{emoji} Alerte météo : Température prévue de {row['temperature_2m']}°C à {time} à Versoix.", row, 'temperature_2m')
+                    await send_alert(f"{emoji} Alerte météo : Température prévue de {row['temperature_2m']}°C à {time} à {VILLE}.", row, 'temperature_2m')
                     sent_alerts['temperature'] = time.date()
             if row['precipitation_probability'] > 80 and row['precipitation'] > 15:
                 if sent_alerts['precipitation'] != time.date():
-                    await send_alert(f"🌧️ Alerte météo : Fortes pluies prévues de {row['precipitation']}mm à {time} à Versoix.", row, 'precipitation')
+                    await send_alert(f"🌧️ Alerte météo : Fortes pluies prévues de {row['precipitation']}mm à {time} à {VILLE}.", row, 'precipitation')
                     sent_alerts['precipitation'] = time.date()
             if row['windspeed_10m'] > 60:
                 if sent_alerts['windspeed'] != time.date():
                     emoji = "🌪️" if row['windspeed_10m'] > 75 else "💨"
                     wind_type = "tempétueux" if row['windspeed_10m'] > 75 else "fort"
-                    await send_alert(f"{emoji} Alerte météo : Vent {wind_type} prévu de {row['windspeed_10m']}km/h à {time} à Versoix.", row, 'windspeed_10m')
+                    await send_alert(f"{emoji} Alerte météo : Vent {wind_type} prévu de {row['windspeed_10m']}km/h à {time} à {VILLE}.", row, 'windspeed_10m')
                     sent_alerts['windspeed'] = time.date()
             if row['uv_index'] > 8:
                 if sent_alerts['uv_index'] != time.date():
-                    await send_alert(f"☀️ Alerte météo : Index UV prévu de {row['uv_index']} à {time} à Versoix.", row, 'uv_index')
+                    await send_alert(f"☀️ Alerte météo : Index UV prévu de {row['uv_index']} à {time} à {VILLE}.", row, 'uv_index')
                     sent_alerts['uv_index'] = time.date()
         if len(df_next_twenty_four_hours) >= 24:
             pressure_drop = df_next_twenty_four_hours['pressure_msl'].iloc[0] - df_next_twenty_four_hours['pressure_msl'].iloc[23]
@@ -461,7 +466,7 @@ async def start_command(message: types.Message):
     
     if is_new_user:
         welcome_message = (
-            "Bienvenue sur le bot météo de Versoix! 🌤️\n\n"
+            "Bienvenue sur le bot météo de {VILLE}! 🌤️\n\n"
             "Voici les commandes disponibles :\n"
             "/weather - Obtenir les dernières informations météo\n"
             "/forecast - Voir les prévisions pour les prochaines heures\n"
@@ -469,7 +474,7 @@ async def start_command(message: types.Message):
             "/month - Obtenir le résumé météo du mois dernier\n"
             "/year - Obtenir le résumé météo de l'année en cours\n"
             "/all - Obtenir le résumé météo de toutes les données disponibles\n\n"
-            "N'hésitez pas à utiliser ces commandes pour rester informé sur la météo à Versoix!"
+            "N'hésitez pas à utiliser ces commandes pour rester informé sur la météo à {VILLE}!"
         )
         await message.reply(welcome_message)
     else:

@@ -30,5 +30,5 @@
 * [Nice to have] Add a custom command to view a report between two dates, and if no data is available, display "No data available for the selected period"
 
 ## 🪱 Bug
-* Check logs (The warning messages emitted by a script library seem to always display despite having been ignored)
+* Check logs 
   

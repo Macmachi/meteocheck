@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.6.2
+* VERSIONS : 1.6.4
 * NOTES : None
 *
 '''
@@ -22,12 +22,9 @@ import configparser
 import json
 import pytz
 import warnings
-'''
-Evite le warning : 
-/root/scriptsar/meteocheck/meteocheck.py:273: FutureWarning: Setting an item of incompatible dtype is deprecated and will raise in a future error of pandas. Value '['2024-07-13T00:00:00Z']' has dtype incompatible with datetime64[ns, UTC], please explicitly cast to a compatible dtype first.
-  missing_data.loc[:, 'time'] = pd.to_datetime(missing_data['time']).dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-'''
-warnings.filterwarnings("ignore", category=FutureWarning, module="pandas")
+import locale
+# Pour Linux
+locale.setlocale(locale.LC_TIME, 'fr_FR.UTF-8') 
 
 # Configuration and setup
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -292,10 +289,13 @@ async def get_weather_data():
                 last_twenty_four_hours_df = df[(df['time'] >= twenty_four_hours_ago) & (df['time'] < now)]
                 missing_data = last_twenty_four_hours_df[~last_twenty_four_hours_df['time'].isin(df_existing['time'])]
                 if not missing_data.empty:
-                    #old version with warning : missing_data.loc[:, 'time'] = missing_data['time'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-                    missing_data.loc[:, 'time'] = pd.to_datetime(missing_data['time']).dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-                    missing_data.to_csv(csv_filename, mode='a', header=not os.path.exists(csv_filename), index=False)
-                    await log_message(f"Enregistrement des données manquantes dans le CSV")
+                    try:
+                        missing_data = missing_data.copy()
+                        missing_data['time'] = pd.to_datetime(missing_data['time']).strftime('%Y-%m-%dT%H:%M:%SZ')
+                        missing_data.to_csv(csv_filename, mode='a', header=not os.path.exists(csv_filename), index=False)
+                        await log_message(f"Enregistrement des données manquantes dans le CSV")
+                    except Exception as e:
+                        await log_message(f"Erreur lors de la conversion des dates : {str(e)}")
                 
                 seven_hours_later = now + pd.Timedelta(hours=7)
                 next_seven_hours_df = df[(df['time'] > now) & (df['time'] <= seven_hours_later)]
@@ -366,15 +366,32 @@ def calculate_sunshine_hours(df):
     # Convertir l'heure en heure locale
     df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
     
-    # Définir les heures de jour (approximativement de 5h à 23h)
-    df['is_daytime'] = (df['local_time'].dt.hour >= 6) & (df['local_time'].dt.hour < 21)
+    # Ajuster les heures de jour selon la saison
+    # En été (juin-août)
+    summer_mask = df['local_time'].dt.month.isin([6, 7, 8])
+    df.loc[summer_mask, 'is_daytime'] = (
+        (df.loc[summer_mask, 'local_time'].dt.hour >= 5) & 
+        (df.loc[summer_mask, 'local_time'].dt.hour < 22)
+    )
+    
+    # Au printemps (mars-mai) et automne (septembre-novembre)
+    midseason_mask = df['local_time'].dt.month.isin([3, 4, 5, 9, 10, 11])
+    df.loc[midseason_mask, 'is_daytime'] = (
+        (df.loc[midseason_mask, 'local_time'].dt.hour >= 6) & 
+        (df.loc[midseason_mask, 'local_time'].dt.hour < 21)
+    )
+    
+    # En hiver (décembre-février)
+    winter_mask = df['local_time'].dt.month.isin([12, 1, 2])
+    df.loc[winter_mask, 'is_daytime'] = (
+        (df.loc[winter_mask, 'local_time'].dt.hour >= 8) & 
+        (df.loc[winter_mask, 'local_time'].dt.hour < 17)
+    )
     
     # Considérer comme ensoleillé si :
     # - C'est le jour
     # - L'indice UV est supérieur à 2
-    # - La probabilité de précipitation est inférieure à 50% (pas inclu mais pourrait être inclu)
-    df['is_sunny'] = (df['is_daytime'] & 
-                      (df['uv_index'] > 2))
+    df['is_sunny'] = (df['is_daytime'] & (df['uv_index'] > 2))
     
     # Compter les heures ensoleillées
     sunshine_hours = df['is_sunny'].sum()
@@ -562,11 +579,32 @@ async def get_sunshine_summary(message: types.Message):
         df['time'] = pd.to_datetime(df['time'], utc=True)
         monthly_sunshine = calculate_monthly_sunshine(df)
         
-        response = "Résumé mensuel de l'ensoleillement :\n\n"
-        for month, hours in monthly_sunshine.items():
-            response += f"{month}: {hours:.1f} heures\n"
+        # Convertir l'index en datetime pour le tri
+        monthly_sunshine.index = pd.to_datetime(monthly_sunshine.index + '-01')
+        
+        # Trier par date
+        monthly_sunshine = monthly_sunshine.sort_index()
+        
+        # Convertir l'index en format plus lisible
+        formatted_index = monthly_sunshine.index.strftime('%B %Y')  # Nom complet du mois
+        
+        response = "☀️ Résumé mensuel de l'ensoleillement pour {VILLE} :\n\n"
+        
+        # Calculer le total des heures d'ensoleillement
+        total_sunshine = monthly_sunshine.sum()
+        
+        # Pour chaque mois, ajouter le détail à la réponse
+        for date, hours in zip(formatted_index, monthly_sunshine):
+            # Ajouter une indication si c'est le mois en cours
+            is_current = date == pd.Timestamp.now(tz='UTC').strftime('%B %Y')
+            month_marker = "📍 " if is_current else "📅 "
+            response += f"{month_marker}{date}: {hours:.1f} heures\n"
+        
+        # Ajouter le total à la fin
+        response += f"\n💡 Total: {total_sunshine:.1f} heures d'ensoleillement"
         
         await message.reply(response)
+        
     except Exception as e:
         await log_message(f"Error in get_sunshine_summary: {str(e)}")
         await message.reply("Erreur lors de l'obtention du résumé de l'ensoleillement.")

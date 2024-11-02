@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.6.6
+* VERSIONS : 1.6.7
 * NOTES : None
 *
 '''
@@ -286,13 +286,10 @@ async def get_weather_data():
                 last_twenty_four_hours_df = df[(df['time'] >= twenty_four_hours_ago) & (df['time'] < now)]
                 missing_data = last_twenty_four_hours_df[~last_twenty_four_hours_df['time'].isin(df_existing['time'])]
                 if not missing_data.empty:
-                    try:
-                        missing_data = missing_data.copy()
-                        missing_data['time'] = pd.to_datetime(missing_data['time']).strftime('%Y-%m-%dT%H:%M:%SZ')
-                        missing_data.to_csv(csv_filename, mode='a', header=not os.path.exists(csv_filename), index=False)
-                        await log_message(f"Enregistrement des données manquantes dans le CSV")
-                    except Exception as e:
-                        await log_message(f"Erreur lors de la conversion des dates : {str(e)}")
+                    #old version with warning : missing_data.loc[:, 'time'] = missing_data['time'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    missing_data['time'] = pd.to_datetime(missing_data['time'], utc=True)
+                    missing_data.to_csv(csv_filename, mode='a', header=not os.path.exists(csv_filename), index=False)
+                    await log_message(f"Enregistrement des données manquantes dans le CSV")
                 
                 seven_hours_later = now + pd.Timedelta(hours=7)
                 next_seven_hours_df = df[(df['time'] > now) & (df['time'] <= seven_hours_later)]
@@ -361,8 +358,8 @@ async def check_records(row, alert_column):
 
 def calculate_sunshine_hours(df):
     # Convertir l'heure en heure locale
-    df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
-    
+    df['local_time'] = df['time'].apply(lambda x: x.tz_convert('Europe/Berlin'))
+
     # Ajuster les heures de jour selon la saison
     # En été (juin-août)
     summer_mask = df['local_time'].dt.month.isin([6, 7, 8])

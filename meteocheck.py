@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.6.5
+* VERSIONS : 1.6.6
 * NOTES : None
 *
 '''
@@ -585,10 +585,7 @@ async def get_sunshine_summary(message: types.Message):
         # Convertir l'index en format plus lisible
         formatted_index = monthly_sunshine.index.strftime('%B %Y')  # Nom complet du mois
         
-        response = "☀️ Résumé mensuel de l'ensoleillement pour {VILLE} :\n\n"
-        
-        # Calculer le total des heures d'ensoleillement
-        total_sunshine = monthly_sunshine.sum()
+        response = f"☀️ Résumé mensuel de l'ensoleillement pour {VILLE} :\n\n"
         
         # Pour chaque mois, ajouter le détail à la réponse
         for date, hours in zip(formatted_index, monthly_sunshine):
@@ -596,9 +593,6 @@ async def get_sunshine_summary(message: types.Message):
             is_current = date == pd.Timestamp.now(tz='UTC').strftime('%B %Y')
             month_marker = "📍 " if is_current else "📅 "
             response += f"{month_marker}{date}: {hours:.1f} heures\n"
-        
-        # Ajouter le total à la fin
-        response += f"\n💡 Total: {total_sunshine:.1f} heures d'ensoleillement"
         
         await message.reply(response)
         

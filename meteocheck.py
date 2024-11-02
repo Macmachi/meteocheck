@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.6.4
+* VERSIONS : 1.6.5
 * NOTES : None
 *
 '''
@@ -22,9 +22,6 @@ import configparser
 import json
 import pytz
 import warnings
-import locale
-# Pour Linux
-locale.setlocale(locale.LC_TIME, 'fr_FR.UTF-8') 
 
 # Configuration and setup
 script_dir = os.path.dirname(os.path.realpath(__file__))

@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.6.8
+* VERSIONS : 1.6.9
 * NOTES : None
 *
 '''
@@ -295,7 +295,7 @@ async def get_weather_data():
                 last_twenty_four_hours_df = df[(df['time'] >= twenty_four_hours_ago) & (df['time'] < now)]
                 missing_data = last_twenty_four_hours_df[~last_twenty_four_hours_df['time'].isin(df_existing['time'])]
                 if not missing_data.empty:
-                    missing_data['time'] = pd.to_datetime(missing_data['time'], utc=True, errors='coerce').dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    missing_data.loc[:, 'time'] = pd.to_datetime(missing_data['time'], utc=True, errors='coerce').dt.strftime('%Y-%m-%dT%H:%M:%SZ')
                     missing_data = missing_data.dropna(subset=['time'])
                     missing_data.to_csv(csv_filename, mode='a', header=not os.path.exists(csv_filename), index=False)
                     await log_message(f"Enregistrement des données manquantes dans le CSV")

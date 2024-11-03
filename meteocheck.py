@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : 1.6.7
+* VERSIONS : 1.6.8
 * NOTES : None
 *
 '''
@@ -69,8 +69,17 @@ def clean_csv_file():
         # Réorganiser les colonnes selon l'ordre correct
         df = df.reindex(columns=correct_columns)
         
+        # Remplacer les espaces par "T" et standardiser le fuseau horaire
+        df['time'] = df['time'].str.replace(' ', 'T', regex=False).str.replace('+00:00', 'Z', regex=False)
+        
         # Convertir la colonne time en datetime
-        df['time'] = pd.to_datetime(df['time'], utc=True)
+        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
+        
+        # Supprimer les entrées invalides (NaT)
+        invalid_entries = df['time'].isna().sum()
+        df = df.dropna(subset=['time'])
+        if invalid_entries > 0:
+            print(f"{invalid_entries} entrées invalides supprimées du CSV.")
         
         # Trier par date
         df = df.sort_values('time')
@@ -278,7 +287,7 @@ async def get_weather_data():
                 # Lecture du CSV existant
                 if os.path.exists(csv_filename):
                     df_existing = pd.read_csv(csv_filename)
-                    df_existing['time'] = pd.to_datetime(df_existing['time'], utc=True)
+                    df_existing['time'] = pd.to_datetime(df_existing['time'], utc=True, errors='coerce')
                 else:
                     df_existing = pd.DataFrame(columns=columns)
                 
@@ -286,8 +295,8 @@ async def get_weather_data():
                 last_twenty_four_hours_df = df[(df['time'] >= twenty_four_hours_ago) & (df['time'] < now)]
                 missing_data = last_twenty_four_hours_df[~last_twenty_four_hours_df['time'].isin(df_existing['time'])]
                 if not missing_data.empty:
-                    #old version with warning : missing_data.loc[:, 'time'] = missing_data['time'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-                    missing_data['time'] = pd.to_datetime(missing_data['time'], utc=True)
+                    missing_data['time'] = pd.to_datetime(missing_data['time'], utc=True, errors='coerce').dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    missing_data = missing_data.dropna(subset=['time'])
                     missing_data.to_csv(csv_filename, mode='a', header=not os.path.exists(csv_filename), index=False)
                     await log_message(f"Enregistrement des données manquantes dans le CSV")
                 

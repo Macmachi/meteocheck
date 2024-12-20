@@ -29,6 +29,9 @@
 * [✅] Add command to view a report on all recorded data
 * [Nice to have] Add a custom command to view a report between two dates, and if no data is available, display "No data available for the selected period"
 
+### ⚠️ Important Note on Weather Data Timing
+Attention: The script records weather data based on the server time. For example, if the server is set to UTC+0, then imagine it’s 12:00 (UTC+0). If we request the weather from the last hour at 13:00 (UTC+1), the bot will tell us that at 12:00 UTC+0 it was this, but in fact, it returns the entry for the last hour that has just finished, which is from 11:00 to 12:00.
+
 ## 🪱 Bug
 * Check logs 
   

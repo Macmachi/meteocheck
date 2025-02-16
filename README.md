@@ -28,6 +28,7 @@
 * [✅] Improved presentation for information with /weather and forecast commands, such as monthly or yearly reports.
 * [✅] Add command to view a report on all recorded data
 * [Nice to have] Add a custom command to view a report between two dates, and if no data is available, display "No data available for the selected period"
+* [Nice to have] Visualize different years graphically for various metrics such as temperature, rainfall accumulation, etc.
 
 ### ⚠️ Important Note on Weather Data Timing
 The script records weather data based on the server's time zone (the API time zone should be the same as the server's). For example, if the server is set to UTC+0 and the current server time is 12:00 UTC, when a user in the UTC+1 zone requests the weather for the last hour at 13:00 UTC+1 (which corresponds to 12:00 UTC), the bot will provide data for the previously completed hour, from 11:00 to 12:00 UTC (from 12:00 to 13:00 UTC+1). This ensures that the returned information covers a full, finalized hourly interval.

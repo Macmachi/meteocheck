@@ -31,7 +31,9 @@
 * [Nice to have] Visualize different years graphically for various metrics such as temperature, rainfall accumulation, etc.
 
 ### ⚠️ Important Note on Weather Data Timing
-The script records weather data based on the server's time zone (the API time zone should be the same as the server's). For example, if the server is set to UTC+0 and the current server time is 12:00 UTC, when a user in the UTC+1 zone requests the weather for the last hour at 13:00 UTC+1 (which corresponds to 12:00 UTC), the bot will provide data for the previously completed hour, from 11:00 to 12:00 UTC (from 12:00 to 13:00 UTC+1). This ensures that the returned information covers a full, finalized hourly interval.
+The script records weather data in UTC. The Open-Meteo API is queried using the GMT (UTC) time zone, ensuring that all timestamps stored (e.g., in the CSV file) are in UTC. This standardization allows the system to consistently manage and compare data, guaranteeing that each hourly interval represents a fully completed measurement period.
+For example, if the current time in UTC is 12:00, a user in the UTC+1 zone who requests weather data at 13:00 local time (which corresponds to 12:00 UTC) will receive data for the fully completed previous hour. In this scenario, the returned data covers the interval from 11:00 to 12:00 UTC (which corresponds to 12:00 to 13:00 in the local Berlin time).
+This approach ensures that users always receive weather information based on complete, finalized hourly intervals—avoiding any partial or ongoing measurements—even though the displayed times are converted to the local Berlin time zone for clarity.
 
 ## 🪱 Bug
 * Check logs 

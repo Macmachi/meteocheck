@@ -1,40 +1,82 @@
-# 🌦 MeteoCheck 
+# 🌦 MeteoCheck - Station Météo Avancée
 
-### 📌 Description 
-* 🌡️ Records weather details such as temperature, precipitation, 🌬️ wind speed, ☀️ UV index, 📊 atmospheric pressure and 💧 humidity using the [open-meteo.com API](https://open-meteo.com/en/docs).
-* 🕰️ Operates 24/7, updating every hour.
-* 🚨 Sends weather alerts to a Telegram bot by:
-  * Checking every minute the weather for the upcoming 6️⃣ hours.
-  * Monitoring every minute the atmospheric pressure for the next 2️⃣4️⃣ hours.
-  * For each type of alert, an alert is sent only once a day
-* 📊 Dispatches monthly and yearly weather summaries.
-* Command /start to start receiving alerts (& List of commands)
-* Command /weather to view the last entry in the CSV (past hour)
-* Command /month to view report of the last month's entries in the CSV
-* Command /year to view report of the current year's entries in the CSV
-* [NEW] Command /all to view report of all entries in the CSV
-* Command /forecast to view the next 6 hours forecast
-* Command /sunshine to view sunshine reports of all entries in the CSV 
-  
-### 🔗 Useful Links
-* 🔗 [Generate an API link for your city](https://open-meteo.com/en/docs).
+### 📌 Description
+MeteoCheck est un bot Telegram météorologique complet qui surveille et analyse les conditions météorologiques 24h/7j en utilisant l'[API open-meteo.com](https://open-meteo.com/en/docs).
 
-## 🚀 Upcoming Features or Changes
-* [✅] Improved support for the transition between summer and winter time.  
-* [✅] Add the recently introduced 'humidity' parameter to monthly and annual reports, including the least humid and most humid days.
-* [✅] Add a command to view weather forecasts for the upcoming 6 hours.
-* [✅] Calculate the number of sunshine hours per day for the monthly report and per month for the annual report, based on UV values.
-* [✅] Add emojis for reports.
-* [✅] Improved presentation for information with /weather and forecast commands, such as monthly or yearly reports.
-* [✅] Add command to view a report on all recorded data
-* [Nice to have] Add a custom command to view a report between two dates, and if no data is available, display "No data available for the selected period"
-* [Nice to have] Visualize different years graphically for various metrics such as temperature, rainfall accumulation, etc.
+#### 🔄 Fonctionnalités de surveillance automatique
+* 🌡️ Enregistre les données météo horaires : température, précipitations, 🌬️ vitesse du vent, ☀️ indice UV, 📊 pression atmosphérique et 💧 humidité
+* 🕰️ Surveillance continue avec vérifications météo chaque minute
+* 🚨 Système d'alertes intelligent pour conditions météo extrêmes :
+  * Températures dangereuses (> 35°C ou < -10°C)
+  * Fortes précipitations (> 15mm avec probabilité > 80%)
+  * Vents violents (> 60 km/h)
+  * Indice UV élevé (> 8)
+  * **🌪️ Détection de bombes météorologiques** avec calculs scientifiques adaptés à la latitude
 
-### ⚠️ Important Note on Weather Data Timing
-The script records weather data in UTC. The Open-Meteo API is queried using the GMT (UTC) time zone, ensuring that all timestamps stored (e.g., in the CSV file) are in UTC. This standardization allows the system to consistently manage and compare data, guaranteeing that each hourly interval represents a fully completed measurement period.
-For example, if the current time in UTC is 12:00, a user in the UTC+1 zone who requests weather data at 13:00 local time (which corresponds to 12:00 UTC) will receive data for the fully completed previous hour. In this scenario, the returned data covers the interval from 11:00 to 12:00 UTC (which corresponds to 12:00 to 13:00 in the local Berlin time).
-This approach ensures that users always receive weather information based on complete, finalized hourly intervals—avoiding any partial or ongoing measurements—even though the displayed times are converted to the local Berlin time zone for clarity.
+#### 📊 Commandes d'analyse météo
+* **Données actuelles :**
+  * `/start` - Démarrage et liste complète des commandes
+  * `/weather` - Dernières données météo enregistrées
+  * `/forecast` - Prévisions détaillées pour les 6 prochaines heures
 
-## 🪱 Bug
-* Check logs 
-  
+* **Résumés statistiques :**
+  * `/month` - Résumé complet du mois dernier
+  * `/year` - Résumé de l'année en cours
+  * `/all` - Résumé de toutes les données historiques
+  * `/daterange YYYY-MM-DD YYYY-MM-DD` - Résumé personnalisé entre deux dates
+  * `/sunshine` - Calculs d'ensoleillement mensuel basés sur l'indice UV
+
+#### 📈 Visualisations graphiques avancées
+* **Graphiques temporels :**
+  * `/graph <métrique> [jours]` - Graphiques détaillés avec moyennes mobiles
+    * Métriques : `temperature`, `rain`, `wind`, `pressure`, `uv`, `humidity`
+    * Exemple : `/graph temperature 30` (30 derniers jours)
+  * `/forecastgraph` - Graphique des prévisions 24h avec codes couleur méteo
+
+* **Analyses comparatives :**
+  * `/heatmap [année|all]` - Calendriers thermiques style GitHub
+    * `/heatmap 2024` - Année spécifique
+    * `/heatmap all` - Vue multi-années
+  * `/yearcompare [métrique]` - Comparaison inter-annuelle avec tendances
+  * `/top10 <métrique>` - Classement des valeurs extrêmes
+
+#### 🎯 Exemples d'utilisation
+/graph rain 7          # Précipitations des 7 derniers jours
+/heatmap all           # Calendrier thermique toutes années
+/yearcompare wind      # Comparaison des vents par année
+/top10 temperature     # Records de température
+/daterange 2024-06-01 2024-08-31  # Analyse été 2024
+
+### 🔗 Liens utiles
+* 🔗 [Configurateur API pour votre ville](https://open-meteo.com/en/docs)
+
+### 🆕 Nouvelles fonctionnalités majeures
+* [✅] **Graphiques météo avancés** avec palettes de couleurs modernes et moyennes mobiles
+* [✅] **Calendriers thermiques** style GitHub avec vue multi-années
+* [✅] **Détection scientifique de bombes météorologiques** avec seuils ajustés par latitude
+* [✅] **Système de comparaison inter-annuelle** avec analyse de tendances
+* [✅] **Top 10 des records** avec horodatage précis
+* [✅] **Résumés de période personnalisables** avec commande `/daterange`
+* [✅] **Calculs d'ensoleillement astronomiques** précis selon la géolocalisation
+* [✅] **Interface moderne** avec emojis et codes couleur météorologiques
+
+### 🚀 Fonctionnalités techniques avancées
+* **Architecture asynchrone** avec aiogram 3.x pour performances optimales
+* **Visualisations matplotlib/seaborn** avec styles modernes
+* **Gestion robuste des erreurs** et logging détaillé
+* **Calculs astronomiques** pour lever/coucher du soleil selon latitude
+* **Palettes de couleurs météorologiques** conformes aux standards MeteoSuisse
+* **Moyennes mobiles** et analyses de tendances
+* **Formatage temporel intelligent** adaptatif selon la période
+
+### ⚠️ Note importante sur les données temporelles
+Le script enregistre toutes les données en UTC. L'API Open-Meteo est interrogée en GMT (UTC), garantissant une cohérence temporelle. Les affichages pour l'utilisateur sont automatiquement convertis en heure locale Europe/Berlin, mais le stockage reste en UTC pour assurer l'intégrité des comparaisons historiques et des calculs astronomiques.
+
+### 🪱 Logs et débogage
+* Logs détaillés dans `log_meteocheck.log`
+* Gestion d'erreurs avec retry automatique
+* Nettoyage automatique du CSV au démarrage
+
+---
+
+**🎯 MeteoCheck combine surveillance météo en temps réel, analyses statistiques poussées et visualisations modernes pour offrir une expérience météorologique complète via Telegram.**

@@ -1,4 +1,4 @@
-# 🌦 MeteoCheck - Station Météo Avancée
+# 🌦 MeteoCheck - Bot Météo Telegram Avancée
 
 ### 📌 Description
 MeteoCheck est un bot Telegram météorologique complet qui surveille et analyse les conditions météorologiques 24h/7j en utilisant l'[API open-meteo.com](https://open-meteo.com/en/docs).

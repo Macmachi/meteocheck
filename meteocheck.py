@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Arnaud R.
-* VERSIONS : v1.7.0
+* VERSIONS : v1.8.0
 * NOTES : None
 *
 '''
@@ -18,6 +18,55 @@ import configparser
 import json
 import pytz # Pour la gestion des fuseaux horaires
 import logging # Ajout pour un meilleur logging
+import matplotlib
+matplotlib.use('Agg')  # Backend non-interactif pour serveurs
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import seaborn as sns
+import numpy as np
+import io
+from datetime import datetime as dt
+
+# Configuration style moderne pour les graphiques
+plt.style.use('seaborn-v0_8-darkgrid')
+sns.set_palette("husl")
+
+# Configuration des polices pour éviter les warnings emoji
+import warnings
+import matplotlib.font_manager as fm
+
+# Désactiver les warnings spécifiques aux glyphes manquants
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+
+# Trouver une police système qui supporte mieux les caractères Unicode
+available_fonts = [f.name for f in fm.fontManager.ttflist]
+emoji_compatible_fonts = ['Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', 'DejaVu Sans', 'Liberation Sans']
+selected_font = 'sans-serif'  # Fallback par défaut
+
+for font in emoji_compatible_fonts:
+    if font in available_fonts:
+        selected_font = font
+        break
+
+plt.rcParams.update({
+    'figure.facecolor': '#f8f9fa',
+    'axes.facecolor': '#ffffff',
+    'axes.edgecolor': '#dee2e6',
+    'axes.linewidth': 0.8,
+    'axes.grid': True,
+    'grid.color': '#e9ecef',
+    'grid.alpha': 0.6,
+    'font.family': ['sans-serif'],
+    'font.sans-serif': [selected_font, 'DejaVu Sans', 'Liberation Sans', 'Arial'],
+    'font.size': 10,
+    'axes.titlesize': 14,
+    'axes.labelsize': 11,
+    'xtick.labelsize': 9,
+    'ytick.labelsize': 9,
+    'legend.fontsize': 10,
+    'figure.titlesize': 16,
+    'axes.unicode_minus': False  # Éviter les problèmes avec les caractères Unicode
+})
 
 # Imports spécifiques à aiogram 3.x
 from aiogram import Bot, Dispatcher, types, Router
@@ -25,6 +74,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext # Si vous prévoyez d'utiliser FSM plus tard
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError # Pour la gestion des erreurs de l'API Telegram
+from aiogram.types import BufferedInputFile # Pour l'envoi de fichiers en mémoire
 
 # Configuration and setup
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -312,6 +362,17 @@ async def get_weather_data():
                         header_needed = not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0
                         missing_data.to_csv(csv_filename, mode='a', header=header_needed, index=False)
                         await log_message(f"Enregistrement de {len(missing_data)} nouvelles données manquantes dans le CSV.")
+                        
+                        # Vérifier les records sur les nouvelles données historiques réelles
+                        for _, row in missing_data.iterrows():
+                            # Reconvertir le temps en datetime pour check_records
+                            row_copy = row.copy()
+                            row_copy['time'] = pd.to_datetime(row_copy['time'], utc=True)
+                            
+                            # Vérifier les records pour les métriques principales
+                            for metric in ['temperature_2m', 'precipitation', 'windspeed_10m', 'pressure_msl', 'uv_index']:
+                                if metric in row_copy and pd.notna(row_copy[metric]):
+                                    await check_records(row_copy, metric, is_forecast=False)
                 
                 # Prévisions pour les prochaines heures
                 seven_hours_later = now + pd.Timedelta(hours=7)
@@ -377,17 +438,9 @@ async def check_weather():
                     await send_alert(f"☀️ Alerte météo : Index UV prévu de {row['uv_index']:.1f} à {time_local.strftime('%H:%M')} à {VILLE}.", row, 'uv_index')
                     sent_alerts['uv_index'] = alert_date_key
 
-        # Alerte de bombe météorologique pour les 24 prochaines heures
-        if len(df_next_twenty_four_hours) >= 24: # S'assurer d'avoir assez de données pour comparer t0 et t+23h
-            # iloc[0] est la première heure de prévision, iloc[23] est la 24ème heure de prévision
-            pressure_drop = df_next_twenty_four_hours['pressure_msl'].iloc[0] - df_next_twenty_four_hours['pressure_msl'].iloc[23]
-            if pressure_drop >= 20: # hPa
-                time_event_start_local = df_next_twenty_four_hours['time'].iloc[0].tz_convert('Europe/Berlin')
-                alert_date_key_pressure = time_event_start_local.date()
-                if sent_alerts['pressure_msl'] != alert_date_key_pressure:
-                    # Utiliser la première ligne du DataFrame des 24h pour check_records
-                    await send_alert(f"🌪️ Alerte météo : Risque de bombe météorologique détecté. Baisse de pression prévue de {round(pressure_drop, 2)} hPa sur 24 heures à partir de {time_event_start_local.strftime('%H:%M le %d/%m')}.", df_next_twenty_four_hours.iloc[0], 'pressure_msl')
-                    sent_alerts['pressure_msl'] = alert_date_key_pressure
+        # Détection de bombe météorologique améliorée pour les 24 prochaines heures
+        if len(df_next_twenty_four_hours) >= 24:
+            await detect_meteorological_bomb(df_next_twenty_four_hours)
     
     except KeyError as e:
         await log_message(f"Erreur de clé dans check_weather (probablement une colonne manquante dans le DataFrame): {str(e)}")
@@ -395,8 +448,112 @@ async def check_weather():
         await log_message(f"Erreur inattendue dans check_weather: {str(e)}\n{traceback.format_exc()}")
 
 
-async def check_records(row_alert, alert_column):
-    """Vérifie si une valeur entrante bat un record annuel."""
+async def detect_meteorological_bomb(df_forecast):
+    """Détection avancée de bombe météorologique selon les critères scientifiques.
+    
+    Critères officiels :
+    - Latitude 46°N (votre ville) : seuil ~22 hPa/24h (ajusté par sin(latitude))
+    - Recherche de la plus forte baisse sur toute période de 24h consécutives
+    - Conditions météo associées : vents forts + précipitations
+    """
+    global sent_alerts
+    
+    try:
+        if len(df_forecast) < 24:
+            return
+            
+        # Calcul du seuil ajusté par latitude (formule scientifique standard)
+        CITY_LAT = float(LATITUDE)  # Latitude depuis config.ini
+        base_threshold = 24.0  # hPa/24h à 60°N (référence)
+        latitude_factor = np.sin(np.radians(60)) / np.sin(np.radians(CITY_LAT))
+        adjusted_threshold = base_threshold * latitude_factor  # ~22.1 hPa pour 46°N
+        
+        # Recherche de la plus forte baisse sur toutes les fenêtres de 24h
+        max_pressure_drop = 0
+        bomb_start_idx = None
+        bomb_end_idx = None
+        
+        for start_idx in range(len(df_forecast) - 23):
+            end_idx = start_idx + 23
+            pressure_start = df_forecast.iloc[start_idx]['pressure_msl']
+            pressure_end = df_forecast.iloc[end_idx]['pressure_msl']
+            pressure_drop = pressure_start - pressure_end
+            
+            if pressure_drop > max_pressure_drop:
+                max_pressure_drop = pressure_drop
+                bomb_start_idx = start_idx
+                bomb_end_idx = end_idx
+        
+        # Vérification du seuil de bombe météorologique
+        if max_pressure_drop >= adjusted_threshold and bomb_start_idx is not None:
+            bomb_start_time = df_forecast.iloc[bomb_start_idx]['time']
+            bomb_end_time = df_forecast.iloc[bomb_end_idx]['time']
+            bomb_start_local = bomb_start_time.tz_convert('Europe/Berlin')
+            bomb_end_local = bomb_end_time.tz_convert('Europe/Berlin')
+            
+            alert_date_key = bomb_start_local.date()
+            
+            if sent_alerts['pressure_msl'] != alert_date_key:
+                # Analyse des conditions météo associées
+                bomb_period = df_forecast.iloc[bomb_start_idx:bomb_end_idx+1]
+                max_wind = bomb_period['windspeed_10m'].max()
+                total_precip = bomb_period['precipitation'].sum()
+                
+                # Classification de l'intensité
+                if max_pressure_drop >= adjusted_threshold * 1.5:  # ~33 hPa
+                    intensity = "EXTRÊME"
+                    emoji = "🌪️💀"
+                elif max_pressure_drop >= adjusted_threshold * 1.2:  # ~27 hPa
+                    intensity = "MAJEURE"
+                    emoji = "🌪️⚠️"
+                else:
+                    intensity = "MODÉRÉE"
+                    emoji = "🌪️"
+                
+                # Message d'alerte détaillé
+                message = (
+                    f"{emoji} BOMBE MÉTÉOROLOGIQUE {intensity} DÉTECTÉE !\n\n"
+                    f"📉 Chute de pression : {max_pressure_drop:.1f} hPa en 24h\n"
+                    f"🎯 Seuil scientifique (46°N) : {adjusted_threshold:.1f} hPa\n"
+                    f"⏰ Période : {bomb_start_local.strftime('%d/%m %H:%M')} → {bomb_end_local.strftime('%d/%m %H:%M')}\n"
+                    f"💨 Vent max prévu : {max_wind:.1f} km/h\n"
+                    f"🌧️ Précipitations : {total_precip:.1f} mm\n\n"
+                    f"⚠️ RISQUES : Vents violents, pluies torrentielles, conditions dangereuses"
+                )
+                
+                # Envoyer l'alerte sans vérification de records (éviter récursion)
+                await send_alert(message)
+                sent_alerts['pressure_msl'] = alert_date_key
+                
+                await log_message(f"Bombe météorologique détectée : {max_pressure_drop:.1f} hPa en 24h (seuil: {adjusted_threshold:.1f})")
+        
+        # Alerte préventive si proche du seuil (80% du seuil)
+        elif max_pressure_drop >= adjusted_threshold * 0.8:
+            bomb_start_time = df_forecast.iloc[bomb_start_idx]['time']
+            bomb_start_local = bomb_start_time.tz_convert('Europe/Berlin')
+            alert_date_key = bomb_start_local.date()
+            
+            if sent_alerts['pressure_msl'] != alert_date_key:
+                await send_alert(
+                    f"⚠️ Surveillance météo : Forte baisse de pression prévue de {max_pressure_drop:.1f} hPa en 24h "
+                    f"(proche du seuil de bombe météorologique: {adjusted_threshold:.1f} hPa). "
+                    f"Début prévu : {bomb_start_local.strftime('%d/%m à %H:%M')}."
+                )
+                sent_alerts['pressure_msl'] = alert_date_key
+                
+    except Exception as e:
+        await log_message(f"Erreur dans detect_meteorological_bomb: {str(e)}\n{traceback.format_exc()}")
+
+
+async def check_records(row_alert, alert_column, is_forecast=True):
+    """Vérifie si une valeur entrante bat un record annuel ET historique absolu.
+    Args:
+        is_forecast: True pour prévisions (message 'potentiel'), False pour données historiques (message 'nouveau record')
+    
+    Vérifie 2 types de records :
+    - Record annuel : comparaison avec l'année en cours uniquement
+    - Record historique absolu : comparaison avec tout l'historique disponible
+    """
     try:
         if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
             await log_message("Fichier CSV vide ou inexistant, impossible de vérifier les records.")
@@ -410,40 +567,57 @@ async def check_records(row_alert, alert_column):
         df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
         df.dropna(subset=['time'], inplace=True)
 
-        current_year = pd.Timestamp.now(tz='UTC').year
-        df_current_year = df[df['time'].dt.year == current_year].copy() # .copy() pour éviter les warnings
-
-        if df_current_year.empty:
-            await log_message(f"Aucune donnée pour l'année en cours ({current_year}), impossible de vérifier les records pour {alert_column}.")
-            # Si c'est la première donnée de l'année, elle établit le record initial
-            time_local = row_alert['time'].tz_convert('Europe/Berlin')
-            await send_alert(f"🏆 Info météo : Première donnée de l'année pour {alert_column} : {row_alert[alert_column]} à {time_local.strftime('%H:%M')}.")
-            return
-
         # S'assurer que la colonne d'alerte existe et est numérique
-        if alert_column not in df_current_year.columns:
+        if alert_column not in df.columns:
             await log_message(f"Colonne {alert_column} non trouvée dans le CSV pour vérifier les records.")
             return
-        if not pd.api.types.is_numeric_dtype(df_current_year[alert_column]):
+        if not pd.api.types.is_numeric_dtype(df[alert_column]):
             await log_message(f"Colonne {alert_column} n'est pas numérique dans le CSV pour vérifier les records.")
             return
 
+        current_year = pd.Timestamp.now(tz='UTC').year
+        df_current_year = df[df['time'].dt.year == current_year].copy()
+        time_local = row_alert['time'].tz_convert('Europe/Berlin')
 
-        # Vérification du record max
-        max_value_year = df_current_year[alert_column].max()
-        if pd.notna(row_alert[alert_column]) and row_alert[alert_column] > max_value_year:
-            time_local = row_alert['time'].tz_convert('Europe/Berlin')
-            # Note: send_alert est appelé ici, ce qui peut créer une récursion si check_records est appelé depuis send_alert sans condition.
-            # La conception actuelle de send_alert semble gérer cela en ne rappelant pas check_records si row/alert_column sont None.
-            # Pour un message de record, on ne passe pas row/alert_column pour éviter la boucle.
-            await send_alert(f"🏆 Alerte météo : Nouveau record annuel (max) pour {alert_column} : {row_alert[alert_column]} (précédent: {max_value_year}) à {time_local.strftime('%H:%M')}.")
+        # === VÉRIFICATION RECORDS ANNUELS (année courante) ===
+        if df_current_year.empty:
+            await log_message(f"Aucune donnée pour l'année en cours ({current_year}), impossible de vérifier les records annuels pour {alert_column}.")
+            # Si c'est la première donnée de l'année, elle établit le record initial
+            await send_alert(f"🏆 Info météo : Première donnée de l'année pour {alert_column} : {row_alert[alert_column]} à {time_local.strftime('%H:%M')}.")
+        else:
+            # Vérification du record max annuel
+            max_value_year = df_current_year[alert_column].max()
+            if pd.notna(row_alert[alert_column]) and row_alert[alert_column] > max_value_year:
+                prefix = "Potentiel nouveau" if is_forecast else "Nouveau"
+                suffix = "prévu" if is_forecast else "confirmé"
+                await send_alert(f"🏆 Alerte météo : {prefix} record annuel {current_year} (max) pour {alert_column} : {row_alert[alert_column]} (précédent: {max_value_year}) {suffix} à {time_local.strftime('%H:%M')}.")
 
-        # Vérification du record min (spécifiquement pour la température)
+            # Vérification du record min annuel (spécifiquement pour la température)
+            if alert_column == 'temperature_2m':
+                min_value_year = df_current_year[alert_column].min()
+                if pd.notna(row_alert[alert_column]) and row_alert[alert_column] < min_value_year:
+                    prefix = "Potentiel nouveau" if is_forecast else "Nouveau"
+                    suffix = "prévu" if is_forecast else "confirmé"
+                    await send_alert(f"🏆 Alerte météo : {prefix} record annuel {current_year} (min) pour {alert_column} : {row_alert[alert_column]} (précédent: {min_value_year}) {suffix} à {time_local.strftime('%H:%M')}.")
+
+        # === VÉRIFICATION RECORDS HISTORIQUES ABSOLUS (tout l'historique) ===
+        available_years = sorted(df['time'].dt.year.unique())
+        first_year = min(available_years)
+        
+        # Record max historique absolu
+        max_value_absolute = df[alert_column].max()
+        if pd.notna(row_alert[alert_column]) and row_alert[alert_column] > max_value_absolute:
+            prefix = "Potentiel nouveau" if is_forecast else "Nouveau"
+            suffix = "prévu" if is_forecast else "confirmé"
+            await send_alert(f"🔥 RECORD HISTORIQUE : {prefix} record absolu (max) pour {alert_column} : {row_alert[alert_column]} (précédent: {max_value_absolute}) {suffix} à {time_local.strftime('%H:%M')} ! Données depuis {first_year}.")
+
+        # Record min historique absolu (spécifiquement pour la température)
         if alert_column == 'temperature_2m':
-            min_value_year = df_current_year[alert_column].min()
-            if pd.notna(row_alert[alert_column]) and row_alert[alert_column] < min_value_year:
-                time_local = row_alert['time'].tz_convert('Europe/Berlin')
-                await send_alert(f"🏆 Alerte météo : Nouveau record annuel (min) pour {alert_column} : {row_alert[alert_column]} (précédent: {min_value_year}) à {time_local.strftime('%H:%M')}.")
+            min_value_absolute = df[alert_column].min()
+            if pd.notna(row_alert[alert_column]) and row_alert[alert_column] < min_value_absolute:
+                prefix = "Potentiel nouveau" if is_forecast else "Nouveau"
+                suffix = "prévu" if is_forecast else "confirmé"
+                await send_alert(f"🥶 RECORD HISTORIQUE : {prefix} record absolu (min) pour {alert_column} : {row_alert[alert_column]} (précédent: {min_value_absolute}) {suffix} à {time_local.strftime('%H:%M')} ! Données depuis {first_year}.")
 
     except pd.errors.EmptyDataError:
         await log_message("Fichier CSV vide lors de la vérification des records.")
@@ -456,7 +630,8 @@ async def check_records(row_alert, alert_column):
 
 
 def calculate_sunshine_hours(df_calc):
-    """Calcule les heures d'ensoleillement estimées à partir d'un DataFrame."""
+    """Calcule les heures d'ensoleillement estimées à partir d'un DataFrame.
+    Optimisé pour la localisation configurée avec calculs astronomiques améliorés."""
     # Créer une copie pour éviter SettingWithCopyWarning si df_calc est une slice
     df = df_calc.copy()
     
@@ -469,30 +644,102 @@ def calculate_sunshine_hours(df_calc):
          df['time'] = df['time'].dt.tz_localize('UTC')
 
     df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
-
-    # Définition des heures de jour (approximatif, pourrait être amélioré avec des bibliothèques d'éphémérides)
-    # Valeurs par défaut
+    
+    # Coordonnées de la ville pour calculs astronomiques plus précis
+    CITY_LAT = float(LATITUDE)  # Latitude depuis config.ini
+    
+    # Calcul approximatif du lever/coucher du soleil pour la localisation
+    # Basé sur l'équation du temps et la déclinaison solaire
+    def get_daylight_hours_city(day_of_year):
+        """Calcule les heures approximatives de lever/coucher du soleil pour la ville."""
+        import math
+        
+        # Déclinaison solaire (approximation)
+        declination = 23.45 * math.sin(math.radians(360 * (284 + day_of_year) / 365))
+        
+        # Angle horaire du coucher du soleil
+        try:
+            cos_hour_angle = -math.tan(math.radians(CITY_LAT)) * math.tan(math.radians(declination))
+            # Limiter entre -1 et 1 pour éviter les erreurs de domaine
+            cos_hour_angle = max(-1, min(1, cos_hour_angle))
+            hour_angle = math.degrees(math.acos(cos_hour_angle))
+            
+            # Heures de lever et coucher (approximatives, en heures décimales)
+            sunrise_hour = 12 - hour_angle / 15
+            sunset_hour = 12 + hour_angle / 15
+            
+            # Ajustements pour l'équation du temps et l'heure d'été (approximatifs)
+            # Correction pour le fuseau horaire Europe/Berlin
+            sunrise_hour += 0.5  # Correction approximative
+            sunset_hour += 0.5
+            
+            return max(4, sunrise_hour), min(22, sunset_hour)  # Limites raisonnables
+        except:
+            # Fallback vers les valeurs saisonnières si le calcul échoue
+            if 80 <= day_of_year <= 266:  # Printemps/Été approximatif
+                return 6, 20
+            else:  # Automne/Hiver
+                return 8, 17
+    
+    # Calcul du jour de l'année et application des heures de jour précises
+    df['day_of_year'] = df['local_time'].dt.dayofyear
+    df['hour'] = df['local_time'].dt.hour + df['local_time'].dt.minute / 60.0
     df['is_daytime'] = False
-
-    # Été (juin-août)
-    summer_mask = df['local_time'].dt.month.isin([6, 7, 8])
-    df.loc[summer_mask, 'is_daytime'] = (df.loc[summer_mask, 'local_time'].dt.hour >= 5) & (df.loc[summer_mask, 'local_time'].dt.hour < 22)
     
-    # Printemps (mars-mai) et Automne (septembre-novembre)
-    midseason_mask = df['local_time'].dt.month.isin([3, 4, 5, 9, 10, 11])
-    df.loc[midseason_mask, 'is_daytime'] = (df.loc[midseason_mask, 'local_time'].dt.hour >= 6) & (df.loc[midseason_mask, 'local_time'].dt.hour < 21)
+    # Appliquer le calcul astronomique pour chaque jour unique
+    for day_of_year in df['day_of_year'].unique():
+        if pd.notna(day_of_year):
+            sunrise, sunset = get_daylight_hours_city(int(day_of_year))
+            day_mask = df['day_of_year'] == day_of_year
+            df.loc[day_mask, 'is_daytime'] = (df.loc[day_mask, 'hour'] >= sunrise) & (df.loc[day_mask, 'hour'] <= sunset)
     
-    # Hiver (décembre-février)
-    winter_mask = df['local_time'].dt.month.isin([12, 1, 2])
-    df.loc[winter_mask, 'is_daytime'] = (df.loc[winter_mask, 'local_time'].dt.hour >= 8) & (df.loc[winter_mask, 'local_time'].dt.hour < 17)
-    
-    # Ensoleillé si c'est le jour ET UV > 2 (seuil arbitraire pour "ensoleillé")
-    # S'assurer que uv_index est numérique et gérer les NaN
+    # Critères d'ensoleillement améliorés pour la région
     if 'uv_index' in df.columns and pd.api.types.is_numeric_dtype(df['uv_index']):
-        df['is_sunny'] = df['is_daytime'] & (df['uv_index'].fillna(0) > 2)
-        sunshine_hours = df['is_sunny'].sum() # Chaque ligne représente une heure
+        # Seuils UV adaptatifs selon la saison pour la localisation
+        def get_uv_threshold(month):
+            """Seuils UV optimisés pour la latitude et climat local."""
+            if month in [12, 1, 2]:      # Hiver : soleil plus faible
+                return 1.0
+            elif month in [3, 4, 10, 11]: # Inter-saisons
+                return 1.5
+            else:                         # Printemps/Été : seuil plus élevé
+                return 2.0
+        
+        df['month'] = df['local_time'].dt.month
+        df['uv_threshold'] = df['month'].apply(get_uv_threshold)
+        
+        # Conditions d'ensoleillement : jour + UV suffisant + pas de forte pluie
+        uv_condition = df['uv_index'].fillna(0) > df['uv_threshold']
+        
+        # Condition météo : pas de fortes précipitations (nuages épais)
+        if 'precipitation' in df.columns and pd.api.types.is_numeric_dtype(df['precipitation']):
+            no_heavy_rain = df['precipitation'].fillna(0) < 2.0  # Moins de 2mm/h
+        else:
+            no_heavy_rain = True
+        
+        # Condition d'humidité : éviter les brouillards épais (climat lacustre)
+        if 'relativehumidity_2m' in df.columns and pd.api.types.is_numeric_dtype(df['relativehumidity_2m']):
+            no_thick_fog = df['relativehumidity_2m'].fillna(100) < 95  # Moins de 95% d'humidité
+        else:
+            no_thick_fog = True
+        
+        # Combinaison des conditions pour un ensoleillement effectif
+        df['is_sunny'] = df['is_daytime'] & uv_condition & no_heavy_rain & no_thick_fog
+        sunshine_hours = df['is_sunny'].sum()
     else:
-        sunshine_hours = 0 # Pas de données UV ou non numérique
+        # Fallback si pas de données UV : estimation basée sur les conditions météo seules
+        if ('precipitation' in df.columns and
+            'relativehumidity_2m' in df.columns and
+            pd.api.types.is_numeric_dtype(df['precipitation']) and
+            pd.api.types.is_numeric_dtype(df['relativehumidity_2m'])):
+            
+            # Estimation sans UV : conditions météo favorables
+            good_weather = (df['precipitation'].fillna(0) < 1.0) & (df['relativehumidity_2m'].fillna(100) < 85)
+            df['is_sunny'] = df['is_daytime'] & good_weather
+            sunshine_hours = df['is_sunny'].sum() * 0.7  # Facteur de correction sans UV
+        else:
+            # Estimation très approximative basée sur les heures de jour seules
+            sunshine_hours = df['is_daytime'].sum() * 0.4  # 40% d'ensoleillement moyen
 
     return sunshine_hours
 
@@ -605,6 +852,46 @@ def generate_summary(df_summary):
     ]
     return "\n".join(summary_parts)
 
+# --- Fonctions utilitaires pour graphiques et dates ---
+def parse_date_input(date_str):
+    """Parse et valide une date d'entrée (format YYYY-MM-DD)."""
+    try:
+        return pd.to_datetime(date_str, format='%Y-%m-%d', utc=True)
+    except (ValueError, TypeError):
+        return None
+
+async def create_graph_image(fig):
+    """Convertit une figure matplotlib en BytesIO pour Telegram."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    return buf
+
+async def send_graph(chat_id, fig, caption):
+    """Envoie un graphique via Telegram."""
+    try:
+        buf = await create_graph_image(fig)
+        input_file = BufferedInputFile(buf.getvalue(), filename="graph.png")
+        await bot.send_photo(chat_id=chat_id, photo=input_file, caption=caption)
+        await log_message(f"Graphique envoyé avec succès à chat_id: {chat_id}")
+    except Exception as e:
+        await log_message(f"Erreur envoi graphique à {chat_id}: {str(e)}")
+        await bot.send_message(chat_id, f"Erreur lors de la génération du graphique: {str(e)}")
+
+def get_metric_info(metric):
+    """Retourne les informations d'affichage pour une métrique."""
+    metrics = {
+        'temperature_2m': {'name': 'Température', 'unit': '°C', 'emoji': '🌡️'},
+        'precipitation': {'name': 'Précipitations', 'unit': 'mm', 'emoji': '🌧️'},
+        'windspeed_10m': {'name': 'Vitesse du vent', 'unit': 'km/h', 'emoji': '💨'},
+        'pressure_msl': {'name': 'Pression', 'unit': 'hPa', 'emoji': '🎈'},
+        'uv_index': {'name': 'Indice UV', 'unit': '', 'emoji': '☀️'},
+        'relativehumidity_2m': {'name': 'Humidité', 'unit': '%', 'emoji': '💦'},
+        'precipitation_probability': {'name': 'Probabilité pluie', 'unit': '%', 'emoji': '🌦️'}
+    }
+    return metrics.get(metric, {'name': metric, 'unit': '', 'emoji': '📊'})
+
 # --- Définition des Handlers avec le Router ---
 @router.message(Command("start"))
 async def start_command(message: types.Message):
@@ -638,21 +925,43 @@ async def start_command(message: types.Message):
     if is_new_user:
         welcome_message = (
             f"Bienvenue sur le bot météo de {welcome_ville}! 🌤️\n\n"
-            "Voici les commandes disponibles :\n"
-            "/weather - Obtenir les dernières informations météo enregistrées\n"
-            "/forecast - Voir les prévisions pour les prochaines heures\n"
-            "/sunshine - Voir le résumé mensuel de l'ensoleillement\n"
-            "/month - Obtenir le résumé météo du mois dernier\n"
-            "/year - Obtenir le résumé météo de l'année en cours\n"
-            "/all - Obtenir le résumé météo de toutes les données disponibles\n\n"
-            f"N'hésitez pas à utiliser ces commandes pour rester informé sur la météo à {welcome_ville}!"
+            "📊 **Commandes de base :**\n"
+            "/weather - Dernières données météo enregistrées\n"
+            "/forecast - Prévisions pour les prochaines heures\n"
+            "/sunshine - Résumé mensuel de l'ensoleillement\n\n"
+            "📅 **Résumés par période :**\n"
+            "/month - Résumé du mois dernier\n"
+            "/year - Résumé de l'année en cours\n"
+            "/all - Résumé de toutes les données\n"
+            "/daterange YYYY-MM-DD YYYY-MM-DD - Ex: /daterange 2024-01-01 2024-12-31\n\n"
+            "📈 **Graphiques et analyses :**\n"
+            "/forecastgraph - Graphique des prévisions 24h\n"
+            "/graph <métrique> [jours] - Ex: /graph temperature 30\n"
+            "   Métriques: temperature, rain, wind, pressure, uv, humidity\n"
+            "/heatmap [année|all] - Ex: /heatmap 2024 ou /heatmap all\n"
+            "/yearcompare [métrique] - Ex: /yearcompare temperature\n"
+            "   Métriques: temperature, rain, wind, pressure\n"
+            "/top10 <métrique> - Ex: /top10 temperature\n"
+            "   Métriques: temperature, rain, wind, pressure, uv, humidity\n\n"
+            f"💡 **Exemples rapides :**\n"
+            f"/graph rain 7 - Pluie des 7 derniers jours\n"
+            f"/top10 wind - Vents les plus forts\n"
+            f"/daterange 2024-06-01 2024-08-31 - Été 2024\n\n"
+            f"N'hésitez pas à explorer ces fonctionnalités pour analyser la météo à {welcome_ville}!"
         )
         await message.reply(welcome_message)
     else:
         welcome_back_message = (
-            "Vous avez déjà lancé le bot !\n\n"
-            "Mais voici un rappel des commandes disponibles :\n"
-            "/weather, /forecast, /sunshine, /month, /year, /all\n\n"
+            "Vous avez déjà lancé le bot ! 🌤️\n\n"
+            "📋 **Rappel des commandes principales :**\n"
+            "• /weather - Météo actuelle\n"
+            "• /forecast - Prévisions\n"
+            "• /graph temp 7 - Graphique température 7 jours\n"
+            "• /heatmap 2024 - Calendrier thermique 2024\n"
+            "• /top10 rain - Top 10 précipitations\n"
+            "• /daterange 2024-01-01 2024-12-31 - Résumé période\n\n"
+            "💡 **Métriques disponibles :**\n"
+            "temperature, rain, wind, pressure, uv, humidity\n\n"
             "Quelle information météo souhaitez-vous obtenir aujourd'hui?"
         )
         await message.reply(welcome_back_message)
@@ -814,6 +1123,951 @@ async def get_year_summary_command(message: types.Message): # Renommé
 @router.message(Command("all"))
 async def get_all_summary_command(message: types.Message): # Renommé
     await send_all_summary(message.chat.id)
+
+@router.message(Command("daterange"))
+async def get_daterange_summary_command(message: types.Message):
+    """Génère un résumé entre deux dates. Usage: /daterange 2024-01-01 2024-12-31"""
+    try:
+        # Parser les arguments
+        args = message.text.split()
+        if len(args) != 3:
+            await message.reply(
+                "Usage: /daterange YYYY-MM-DD YYYY-MM-DD\n"
+                "Exemple: /daterange 2024-01-01 2024-12-31"
+            )
+            return
+        
+        start_date = parse_date_input(args[1])
+        end_date = parse_date_input(args[2])
+        
+        if not start_date or not end_date:
+            await message.reply(
+                "Format de date invalide. Utilisez YYYY-MM-DD\n"
+                "Exemple: /daterange 2024-01-01 2024-12-31"
+            )
+            return
+        
+        if start_date > end_date:
+            await message.reply("La date de début doit être antérieure à la date de fin.")
+            return
+        
+        # Lire et filtrer les données
+        if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
+            await message.reply("Aucune donnée météo disponible.")
+            return
+        
+        df = pd.read_csv(csv_filename)
+        if df.empty:
+            await message.reply("Aucune donnée disponible dans le fichier.")
+            return
+        
+        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
+        df.dropna(subset=['time'], inplace=True)
+        
+        # Filtrer selon la période
+        df_period = df[(df['time'] >= start_date) & (df['time'] <= end_date)].copy()
+        
+        if df_period.empty:
+            period_str = f"{start_date.strftime('%Y-%m-%d')} à {end_date.strftime('%Y-%m-%d')}"
+            await message.reply(f"No data available for the selected period ({period_str}).")
+            return
+        
+        # Générer le résumé
+        summary = generate_summary(df_period)
+        period_str = f"du {start_date.strftime('%d/%m/%Y')} au {end_date.strftime('%d/%m/%Y')}"
+        
+        message_text = f"📅 Résumé météo {period_str} pour {VILLE}:\n\n{summary}"
+        await message.reply(message_text)
+        await log_message(f"Résumé période {period_str} envoyé à chat_id: {message.chat.id}")
+        
+    except Exception as e:
+        await log_message(f"Erreur dans daterange_command: {str(e)}\n{traceback.format_exc()}")
+        await message.reply("Erreur lors de la génération du résumé pour cette période.")
+
+@router.message(Command("top10"))
+async def get_top10_command(message: types.Message):
+    """Affiche le top 10 des valeurs pour une métrique. Usage: /top10 temperature"""
+    try:
+        # Parser les arguments
+        args = message.text.split()
+        if len(args) != 2:
+            metrics_list = "temperature, rain, wind, pressure, uv, humidity"
+            await message.reply(
+                f"Usage: /top10 <métrique>\n"
+                f"Métriques disponibles: {metrics_list}\n"
+                f"Exemple: /top10 temperature"
+            )
+            return
+        
+        metric_arg = args[1].lower()
+        
+        # Mapping des arguments vers les colonnes CSV
+        metric_mapping = {
+            'temperature': 'temperature_2m',
+            'temp': 'temperature_2m',
+            'rain': 'precipitation',
+            'precipitation': 'precipitation',
+            'wind': 'windspeed_10m',
+            'pressure': 'pressure_msl',
+            'uv': 'uv_index',
+            'humidity': 'relativehumidity_2m'
+        }
+        
+        if metric_arg not in metric_mapping:
+            await message.reply(
+                f"Métrique '{metric_arg}' non reconnue.\n"
+                f"Utilisez: temperature, rain, wind, pressure, uv, humidity"
+            )
+            return
+        
+        column_name = metric_mapping[metric_arg]
+        metric_info = get_metric_info(column_name)
+        
+        # Lire les données
+        if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
+            await message.reply("Aucune donnée météo disponible.")
+            return
+        
+        df = pd.read_csv(csv_filename)
+        if df.empty:
+            await message.reply("Aucune donnée disponible.")
+            return
+        
+        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
+        df.dropna(subset=['time'], inplace=True)
+        
+        if column_name not in df.columns:
+            await message.reply(f"Données pour {metric_info['name']} non disponibles.")
+            return
+        
+        # Nettoyer les données et enlever les NaN
+        df_clean = df.dropna(subset=[column_name]).copy()
+        if df_clean.empty:
+            await message.reply(f"Aucune donnée valide pour {metric_info['name']}.")
+            return
+        
+        # Top 10 des valeurs maximales
+        top_max = df_clean.nlargest(10, column_name)
+        # Top 10 des valeurs minimales (pour température principalement)
+        top_min = df_clean.nsmallest(10, column_name) if metric_arg in ['temperature', 'temp'] else None
+        
+        # Construire le message
+        response = f"{metric_info['emoji']} **Top 10 - {metric_info['name']}** à {VILLE}\n\n"
+        
+        # Top maximales
+        response += f"🔥 **Valeurs les plus élevées:**\n"
+        for i, (_, row) in enumerate(top_max.iterrows(), 1):
+            time_local = row['time'].tz_convert('Europe/Berlin')
+            date_str = time_local.strftime('%d/%m/%Y à %H:%M')
+            value = row[column_name]
+            response += f"{i:2d}. {value:.1f}{metric_info['unit']} - {date_str}\n"
+        
+        # Top minimales (seulement pour température)
+        if top_min is not None:
+            response += f"\n❄️ **Valeurs les plus basses:**\n"
+            for i, (_, row) in enumerate(top_min.iterrows(), 1):
+                time_local = row['time'].tz_convert('Europe/Berlin')
+                date_str = time_local.strftime('%d/%m/%Y à %H:%M')
+                value = row[column_name]
+                response += f"{i:2d}. {value:.1f}{metric_info['unit']} - {date_str}\n"
+        
+        await message.reply(response)
+        await log_message(f"Top 10 {metric_info['name']} envoyé à chat_id: {message.chat.id}")
+        
+    except Exception as e:
+        await log_message(f"Erreur dans top10_command: {str(e)}\n{traceback.format_exc()}")
+        await message.reply("Erreur lors de la génération du top 10.")
+
+@router.message(Command("forecastgraph"))
+async def get_forecast_graph_command(message: types.Message):
+    """Génère un graphique des prévisions météo pour les prochaines 24h."""
+    try:
+        # Récupérer les données de prévision
+        _, df_next_twenty_four_hours = await get_weather_data()
+        
+        if df_next_twenty_four_hours.empty:
+            await message.reply("Aucune donnée de prévision disponible pour le moment.")
+            return
+        
+        # Limiter aux 24 prochaines heures
+        forecast_df = df_next_twenty_four_hours.head(24).copy()
+        
+        if forecast_df.empty:
+            await message.reply("Données de prévision insuffisantes.")
+            return
+        
+        # Convertir en heure locale pour l'affichage
+        forecast_df['local_time'] = forecast_df['time'].dt.tz_convert('Europe/Berlin')
+        
+        # Créer le graphique avec style moderne
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+        fig.suptitle(f'🌤️ Prévisions météo pour {VILLE} - Prochaines 24h',
+                    fontsize=18, fontweight='bold', y=0.95, color='#2c3e50')
+        
+        # Graphique température avec gradient
+        temps = forecast_df['local_time']
+        temperatures = forecast_df['temperature_2m']
+        
+        # Ligne principale température avec gradient de couleur
+        points = ax1.scatter(temps, temperatures, c=temperatures, cmap='RdYlBu_r',
+                           s=60, alpha=0.8, edgecolors='white', linewidth=1.5, zorder=5)
+        ax1.plot(temps, temperatures, linewidth=3, alpha=0.7, color='#34495e', zorder=4)
+        
+        # Zone de fond gradient selon température
+        for i in range(len(forecast_df)-1):
+            temp = forecast_df.iloc[i]['temperature_2m']
+            if temp > 25:
+                color = '#ff6b6b'  # Rouge moderne
+                alpha = 0.15
+            elif temp < 5:
+                color = '#74b9ff'  # Bleu moderne
+                alpha = 0.15
+            else:
+                color = '#55a3ff'  # Vert moderne
+                alpha = 0.08
+            ax1.axvspan(temps.iloc[i], temps.iloc[i+1], color=color, alpha=alpha)
+        
+        ax1.set_ylabel('🌡️ Température (°C)', fontsize=12, color='#2c3e50')
+        ax1.tick_params(colors='#34495e')
+        
+        # Colorbar pour la température
+        cbar = plt.colorbar(points, ax=ax1, pad=0.02, aspect=30)
+        cbar.set_label('°C', rotation=0, labelpad=15, color='#2c3e50')
+        
+        # Graphique précipitations moderne avec gradient MeteoSuisse
+        def get_precipitation_color(precip_mm):
+            """Couleurs graduées selon l'intensité des précipitations (style MeteoSuisse)."""
+            if precip_mm < 0.1:
+                return '#f8f9fa'      # Blanc/transparent (pas de pluie)
+            elif precip_mm < 1.0:
+                return '#cce7ff'      # Bleu très clair (bruine)
+            elif precip_mm < 2.5:
+                return '#74b9ff'      # Bleu clair (faible)
+            elif precip_mm < 5.0:
+                return '#4a90e2'      # Bleu moyen (modéré)
+            elif precip_mm < 10.0:
+                return '#2563eb'      # Bleu foncé (fort)
+            elif precip_mm < 25.0:
+                return '#7c3aed'      # Violet (très fort)
+            elif precip_mm < 50.0:
+                return '#dc2626'      # Rouge (intense)
+            else:
+                return '#991b1b'      # Rouge foncé (extrême)
+        
+        colors_precip = [get_precipitation_color(p) for p in forecast_df['precipitation']]
+        bars = ax2.bar(temps, forecast_df['precipitation'], width=0.03,
+                      color=colors_precip, alpha=0.9, edgecolor='white', linewidth=0.5)
+        
+        # Ajouter légende des couleurs précipitations (style MeteoSuisse)
+        max_precip = forecast_df['precipitation'].max()
+        if max_precip > 0.1:  # Seulement si il y a des précipitations
+            legend_text = "Précipitations: "
+            if max_precip >= 25.0:
+                legend_text += "🔴 Extrême"
+            elif max_precip >= 10.0:
+                legend_text += "🟣 Très fort"
+            elif max_precip >= 5.0:
+                legend_text += "🔵 Fort"
+            elif max_precip >= 2.5:
+                legend_text += "🟦 Modéré"
+            elif max_precip >= 1.0:
+                legend_text += "💙 Faible"
+            else:
+                legend_text += "💧 Bruine"
+            
+            ax2.text(0.02, 0.95, legend_text, transform=ax2.transAxes,
+                    fontsize=10, verticalalignment='top',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+        
+        # Ligne probabilité avec style moderne
+        ax2_twin = ax2.twinx()
+        ax2_twin.plot(temps, forecast_df['precipitation_probability'],
+                     color='#00b894', linewidth=3, marker='o', markersize=4,
+                     alpha=0.9, label='Probabilité pluie', markerfacecolor='white',
+                     markeredgecolor='#00b894', markeredgewidth=2)
+        
+        ax2.set_ylabel('💧 Précipitations (mm)', color='#2c3e50')
+        ax2_twin.set_ylabel('☔ Probabilité (%)', color='#00b894')
+        ax2.set_xlabel('🕐 Heure locale', color='#2c3e50')
+        
+        # Style des axes
+        for ax in [ax1, ax2, ax2_twin]:
+            ax.tick_params(colors='#34495e')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False) if ax != ax2_twin else None
+            ax.spines['left'].set_color('#bdc3c7')
+            ax.spines['bottom'].set_color('#bdc3c7')
+        
+        # Formatage des axes temporels
+        for ax in [ax1, ax2]:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            ax.xaxis.set_major_locator(mdates.HourLocator(interval=3))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+        
+        # Légendes
+        lines1, labels1 = ax2.get_legend_handles_labels()
+        lines2, labels2 = ax2_twin.get_legend_handles_labels()
+        ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+        
+        plt.tight_layout()
+        
+        # Ajouter des informations textuelles
+        temp_moy = forecast_df['temperature_2m'].mean()
+        precip_total = forecast_df['precipitation'].sum()
+        
+        caption = (f"🔮 Prévisions 24h pour {VILLE}\n"
+                  f"🌡️ Température moyenne: {temp_moy:.1f}°C\n"
+                  f"🌧️ Précipitations totales prévues: {precip_total:.1f}mm")
+        
+        await send_graph(message.chat.id, fig, caption)
+        
+    except Exception as e:
+        await log_message(f"Erreur dans forecastgraph_command: {str(e)}\n{traceback.format_exc()}")
+        await message.reply("Erreur lors de la génération du graphique de prévisions.")
+
+@router.message(Command("graph"))
+async def get_graph_data_command(message: types.Message):
+    """Génère un graphique pour une métrique spécifique. Usage: /graph temperature"""
+    try:
+        # Parser les arguments
+        args = message.text.split()
+        if len(args) not in [2, 3]:
+            await message.reply(
+                "Usage: /graph <métrique> [jours]\n"
+                "Métriques: temperature, rain, wind, pressure, uv, humidity\n"
+                "Exemple: /graph temperature 30"
+            )
+            return
+        
+        metric_arg = args[1].lower()
+        days = int(args[2]) if len(args) == 3 else 30
+        
+        if days <= 0 or days > 365:
+            await message.reply("Le nombre de jours doit être entre 1 et 365.")
+            return
+        
+        # Mapping des arguments
+        metric_mapping = {
+            'temperature': 'temperature_2m',
+            'temp': 'temperature_2m',
+            'rain': 'precipitation',
+            'precipitation': 'precipitation',
+            'wind': 'windspeed_10m',
+            'pressure': 'pressure_msl',
+            'uv': 'uv_index',
+            'humidity': 'relativehumidity_2m'
+        }
+        
+        if metric_arg not in metric_mapping:
+            await message.reply(
+                f"Métrique '{metric_arg}' non reconnue.\n"
+                f"Utilisez: temperature, rain, wind, pressure, uv, humidity"
+            )
+            return
+        
+        column_name = metric_mapping[metric_arg]
+        metric_info = get_metric_info(column_name)
+        
+        # Lire et filtrer les données
+        if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
+            await message.reply("Aucune donnée météo disponible.")
+            return
+        
+        df = pd.read_csv(csv_filename)
+        if df.empty:
+            await message.reply("Aucune donnée disponible.")
+            return
+        
+        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
+        df.dropna(subset=['time'], inplace=True)
+        
+        if column_name not in df.columns:
+            await message.reply(f"Données pour {metric_info['name']} non disponibles.")
+            return
+        
+        # Filtrer les derniers N jours
+        now = pd.Timestamp.now(tz='UTC')
+        start_date = now - pd.Timedelta(days=days)
+        df_period = df[(df['time'] >= start_date) & (df['time'] <= now)].copy()
+        
+        if df_period.empty:
+            await message.reply(f"Aucune donnée disponible pour les {days} derniers jours.")
+            return
+        
+        # Nettoyer les données
+        df_period = df_period.dropna(subset=[column_name])
+        if df_period.empty:
+            await message.reply(f"Aucune donnée valide pour {metric_info['name']} sur cette période.")
+            return
+        
+        # Convertir en heure locale
+        df_period['local_time'] = df_period['time'].dt.tz_convert('Europe/Berlin')
+        
+        # Créer le graphique avec style moderne
+        fig, ax = plt.subplots(1, 1, figsize=(14, 8))
+        
+        # Couleurs modernes selon la métrique
+        colors = {
+            'temperature_2m': '#e74c3c',      # Rouge moderne
+            'precipitation': '#3498db',       # Bleu moderne
+            'windspeed_10m': '#2ecc71',      # Vert moderne
+            'pressure_msl': '#9b59b6',       # Violet moderne
+            'uv_index': '#f39c12',           # Orange moderne
+            'relativehumidity_2m': '#1abc9c' # Turquoise moderne
+        }
+        
+        color = colors.get(column_name, '#34495e')
+        
+        if metric_arg in ['rain', 'precipitation']:
+            # Graphique en barres moderne pour les précipitations avec gradient MeteoSuisse
+            def get_precipitation_color(precip_mm):
+                """Couleurs graduées selon l'intensité des précipitations (style MeteoSuisse)."""
+                if precip_mm < 0.1:
+                    return '#f8f9fa'      # Blanc/transparent (pas de pluie)
+                elif precip_mm < 1.0:
+                    return '#cce7ff'      # Bleu très clair (bruine)
+                elif precip_mm < 2.5:
+                    return '#74b9ff'      # Bleu clair (faible)
+                elif precip_mm < 5.0:
+                    return '#4a90e2'      # Bleu moyen (modéré)
+                elif precip_mm < 10.0:
+                    return '#2563eb'      # Bleu foncé (fort)
+                elif precip_mm < 25.0:
+                    return '#7c3aed'      # Violet (très fort)
+                elif precip_mm < 50.0:
+                    return '#dc2626'      # Rouge (intense)
+                else:
+                    return '#991b1b'      # Rouge foncé (extrême)
+            
+            colors_precip = [get_precipitation_color(p) for p in df_period[column_name]]
+            bars = ax.bar(df_period['local_time'], df_period[column_name],
+                         width=0.02, color=colors_precip, alpha=0.9, edgecolor='white', linewidth=0.5)
+            
+            # Ajouter légende des couleurs si précipitations significatives
+            max_precip = df_period[column_name].max()
+            if max_precip > 0.1:
+                legend_text = "Intensité max: "
+                if max_precip >= 25.0:
+                    legend_text += "🔴 Extrême"
+                elif max_precip >= 10.0:
+                    legend_text += "🟣 Très fort"
+                elif max_precip >= 5.0:
+                    legend_text += "🔵 Fort"
+                elif max_precip >= 2.5:
+                    legend_text += "🟦 Modéré"
+                elif max_precip >= 1.0:
+                    legend_text += "💙 Faible"
+                else:
+                    legend_text += "💧 Bruine"
+                
+                ax.text(0.02, 0.95, legend_text, transform=ax.transAxes,
+                       fontsize=10, verticalalignment='top',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+        else:
+            # Graphique en ligne moderne avec zone remplie
+            ax.fill_between(df_period['local_time'], df_period[column_name],
+                           alpha=0.3, color=color, interpolate=True)
+            ax.plot(df_period['local_time'], df_period[column_name],
+                   color=color, linewidth=3, alpha=0.9, marker='o',
+                   markersize=2, markerfacecolor='white', markeredgecolor=color)
+            
+            # Moyenne mobile avec style moderne
+            if len(df_period) > 24:
+                df_period['moving_avg'] = df_period[column_name].rolling(window=24, center=True).mean()
+                ax.plot(df_period['local_time'], df_period['moving_avg'],
+                       color='#2c3e50', linewidth=3, alpha=0.8,
+                       linestyle='--', label='📈 Moyenne mobile 24h')
+                ax.legend(loc='upper right', frameon=True, shadow=True,
+                         fancybox=True, framealpha=0.9)
+        
+        # Titre et labels modernes avec emojis
+        ax.set_title(f'{metric_info["emoji"]} {metric_info["name"]} - {days} derniers jours à {VILLE}',
+                    fontsize=16, fontweight='bold', color='#2c3e50', pad=20)
+        ax.set_ylabel(f'{metric_info["emoji"]} {metric_info["name"]} ({metric_info["unit"]})',
+                     fontsize=12, color='#2c3e50')
+        ax.set_xlabel('📅 Date', fontsize=12, color='#2c3e50')
+        
+        # Style moderne des axes
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('#bdc3c7')
+        ax.spines['bottom'].set_color('#bdc3c7')
+        ax.tick_params(colors='#34495e')
+        
+        # Formatage de l'axe temporel amélioré pour meilleure lisibilité
+        if days <= 1:
+            # 1 jour : afficher toutes les 2 heures
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
+            ax.xaxis.set_minor_locator(mdates.HourLocator(interval=1))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, fontsize=10)
+        elif days <= 3:
+            # 2-3 jours : afficher toutes les 6 heures avec date + heure
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m\n%H:%M'))
+            ax.xaxis.set_major_locator(mdates.HourLocator(interval=6))
+            ax.xaxis.set_minor_locator(mdates.HourLocator(interval=3))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=0, fontsize=9, ha='center')
+        elif days <= 7:
+            # 4-7 jours : afficher 2 fois par jour (midi et minuit) avec date
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m\n%H:%M'))
+            ax.xaxis.set_major_locator(mdates.HourLocator(byhour=[0, 12]))
+            ax.xaxis.set_minor_locator(mdates.HourLocator(interval=6))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=0, fontsize=9, ha='center')
+        elif days <= 30:
+            # 8-30 jours : afficher par jour avec date seulement
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
+            ax.xaxis.set_major_locator(mdates.DayLocator(interval=3))
+            ax.xaxis.set_minor_locator(mdates.DayLocator(interval=1))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, fontsize=10)
+        else:
+            # 30+ jours : afficher par semaine
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
+            ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+            ax.xaxis.set_minor_locator(mdates.DayLocator(interval=2))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, fontsize=10)
+        
+        # Activer la grille mineure pour une meilleure lisibilité
+        ax.grid(True, which='minor', alpha=0.3, linestyle=':', linewidth=0.5)
+        ax.grid(True, which='major', alpha=0.6, linestyle='-', linewidth=0.8)
+        plt.tight_layout()
+        
+        # Statistiques
+        data_values = df_period[column_name]
+        mean_val = data_values.mean()
+        max_val = data_values.max()
+        min_val = data_values.min()
+        
+        caption = (f"{metric_info['emoji']} {metric_info['name']} - {days} derniers jours\n"
+                  f"📊 Moyenne: {mean_val:.1f}{metric_info['unit']}\n"
+                  f"📈 Maximum: {max_val:.1f}{metric_info['unit']}\n"
+                  f"📉 Minimum: {min_val:.1f}{metric_info['unit']}")
+        
+        await send_graph(message.chat.id, fig, caption)
+        
+    except ValueError as e:
+        await message.reply("Le nombre de jours doit être un nombre entier valide.")
+    except Exception as e:
+        await log_message(f"Erreur dans graphdata_command: {str(e)}\n{traceback.format_exc()}")
+        await message.reply("Erreur lors de la génération du graphique.")
+
+@router.message(Command("heatmap"))
+async def get_heatmap_command(message: types.Message):
+    """Génère une heatmap calendaire des températures. Usage: /heatmap [année]"""
+    try:
+        # Parser les arguments
+        args = message.text.split()
+        current_year = pd.Timestamp.now(tz='UTC').year
+        
+        # Gestion du paramètre "all"
+        if len(args) == 2 and args[1].lower() == 'all':
+            target_year = 'all'
+        elif len(args) == 2:
+            try:
+                target_year = int(args[1])
+                if target_year < 2020 or target_year > current_year + 1:
+                    await message.reply(f"Année invalide. Utilisez une année entre 2020 et {current_year}, ou 'all' pour toutes les années.")
+                    return
+            except ValueError:
+                await message.reply(f"Format invalide. Utilisez: /heatmap [année] ou /heatmap all")
+                return
+        else:
+            target_year = current_year
+        
+        # Lire les données
+        if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
+            await message.reply("Aucune donnée météo disponible.")
+            return
+        
+        df = pd.read_csv(csv_filename)
+        if df.empty:
+            await message.reply("Aucune donnée disponible.")
+            return
+        
+        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
+        df.dropna(subset=['time'], inplace=True)
+        
+        if 'temperature_2m' not in df.columns:
+            await message.reply("Données de température non disponibles.")
+            return
+        
+        if target_year == 'all':
+            # Mode multi-années : toutes les années disponibles
+            df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
+            df['date'] = df['local_time'].dt.date
+            df['year'] = df['local_time'].dt.year
+            
+            available_years = sorted(df['year'].unique())
+            if len(available_years) == 0:
+                await message.reply("Aucune donnée disponible.")
+                return
+                
+            # Calculer moyennes journalières par année
+            daily_temps = df.groupby(['year', 'date'])['temperature_2m'].mean().reset_index()
+            
+            if daily_temps.empty:
+                await message.reply("Aucune donnée de température valide.")
+                return
+            
+            # Créer une heatmap multi-années (années x jours de l'année)
+            num_years = len(available_years)
+            temp_matrix = np.full((366, num_years), np.nan)  # 366 jours max, n années
+            
+            for year_idx, year in enumerate(available_years):
+                year_data = daily_temps[daily_temps['year'] == year]
+                for _, row in year_data.iterrows():
+                    day_of_year = pd.to_datetime(row['date']).timetuple().tm_yday - 1  # 0-indexé
+                    if 0 <= day_of_year < 366:
+                        temp_matrix[day_of_year, year_idx] = row['temperature_2m']
+                        
+            # Configuration pour mode multi-années
+            matrix_to_plot = temp_matrix.T  # Transposer pour avoir années en Y
+            xlabel_text = '📅 Jour de l\'année'
+            ylabel_text = '📅 Année'
+            title_text = f'🌡️ Calendrier thermique multi-années - {VILLE}\n📊 {len(available_years)} années de données'
+            
+            # Positions et labels pour l'axe X (jours de l'année)
+            month_starts = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+            month_names = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun',
+                          'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
+            x_positions = month_starts
+            x_labels = month_names
+            
+            # Positions et labels pour l'axe Y (années)
+            y_positions = range(len(available_years))
+            y_labels = [f'📅 {year}' for year in available_years]
+            
+        else:
+            # Mode année unique (code existant)
+            df_year = df[df['time'].dt.year == target_year].copy()
+            if df_year.empty:
+                await message.reply(f"Aucune donnée disponible pour l'année {target_year}.")
+                return
+            
+            # Convertir en heure locale et calculer moyennes journalières
+            df_year['local_time'] = df_year['time'].dt.tz_convert('Europe/Berlin')
+            df_year['date'] = df_year['local_time'].dt.date
+            daily_temps = df_year.groupby('date')['temperature_2m'].mean().reset_index()
+            
+            if daily_temps.empty:
+                await message.reply(f"Aucune donnée de température valide pour {target_year}.")
+                return
+            
+            # Créer une série complète pour l'année
+            start_date = datetime.date(target_year, 1, 1)
+            end_date = datetime.date(target_year, 12, 31)
+            all_dates = pd.date_range(start_date, end_date, freq='D').date
+            
+            # Créer un DataFrame complet avec NaN pour les jours manquants
+            full_year = pd.DataFrame({'date': all_dates})
+            full_year = full_year.merge(daily_temps, on='date', how='left')
+            
+            # Préparer les données pour la heatmap
+            full_year['week'] = pd.to_datetime(full_year['date']).dt.isocalendar().week
+            full_year['weekday'] = pd.to_datetime(full_year['date']).dt.weekday
+            full_year['month'] = pd.to_datetime(full_year['date']).dt.month
+            
+            # Créer la matrice pour la heatmap (53 semaines x 7 jours)
+            temp_matrix = np.full((53, 7), np.nan)
+            
+            for _, row in full_year.iterrows():
+                week = int(row['week']) - 1  # 0-indexé
+                weekday = int(row['weekday'])  # 0=lundi, 6=dimanche
+                if 0 <= week < 53 and 0 <= weekday < 7:
+                    temp_matrix[week, weekday] = row['temperature_2m']
+                    
+            # Configuration pour mode année unique
+            matrix_to_plot = temp_matrix.T
+            xlabel_text = '📅 Mois'
+            ylabel_text = '📋 Jour de la semaine'
+            title_text = f'🌡️ Calendrier thermique {target_year} - {VILLE}'
+            
+            # Labels des jours avec emojis
+            y_positions = range(7)
+            y_labels = ['🌅 Lun', '🌅 Mar', '🌅 Mer', '🌅 Jeu', '🌅 Ven', '🏖️ Sam', '🏖️ Dim']
+            
+            # Labels des mois avec emojis saisonniers
+            month_positions = []
+            month_labels = []
+            month_emojis = ['❄️', '❄️', '🌸', '🌸', '🌸', '☀️', '☀️', '☀️', '🍂', '🍂', '🍂', '❄️']
+            
+            for month in range(1, 13):
+                first_day_month = datetime.date(target_year, month, 1)
+                week_num = first_day_month.isocalendar().week - 1
+                if week_num < 53:
+                    month_positions.append(week_num)
+                    month_name = first_day_month.strftime('%b')
+                    month_labels.append(f'{month_emojis[month-1]} {month_name}')
+            
+            x_positions = month_positions
+            x_labels = month_labels
+        
+        # Créer le graphique moderne style GitHub
+        if target_year == 'all':
+            fig, ax = plt.subplots(1, 1, figsize=(18, 12))
+        else:
+            fig, ax = plt.subplots(1, 1, figsize=(16, 10))
+        fig.patch.set_facecolor('#f8f9fa')
+        
+        # Calculer vmin/vmax pour la palette de couleurs
+        if target_year == 'all':
+            vmin, vmax = np.nanmin(temp_matrix), np.nanmax(temp_matrix)
+        else:
+            vmin, vmax = full_year['temperature_2m'].min(), full_year['temperature_2m'].max()
+        
+        # Heatmap moderne avec palette améliorée
+        im = ax.imshow(matrix_to_plot, cmap='RdYlBu_r', aspect='auto',
+                      vmin=vmin, vmax=vmax, interpolation='nearest')
+        
+        # Titre moderne avec style GitHub
+        ax.set_title(title_text, fontsize=20, fontweight='bold', pad=30, color='#24292e')
+        
+        # Configuration des axes selon le mode
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(y_labels, fontsize=11, color='#586069')
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(x_labels, fontsize=11, color='#586069')
+        ax.set_xlabel(xlabel_text, fontsize=14, color='#24292e', fontweight='bold')
+        ax.set_ylabel(ylabel_text, fontsize=14, color='#24292e', fontweight='bold')
+        
+        # Colorbar moderne
+        cbar = plt.colorbar(im, ax=ax, shrink=0.8, aspect=25, pad=0.02)
+        cbar.set_label('🌡️ Température (°C)', fontsize=12, color='#24292e',
+                      rotation=270, labelpad=20)
+        cbar.ax.tick_params(labelsize=10, colors='#586069')
+        
+        # Style moderne des bordures
+        for spine in ax.spines.values():
+            spine.set_color('#d1d5da')
+            spine.set_linewidth(1)
+        
+        ax.tick_params(colors='#586069', length=0)
+        
+        # Grille subtile style GitHub (adaptée selon le mode)
+        if target_year == 'all':
+            ax.set_xticks(np.arange(-0.5, 366, 30), minor=True)
+            ax.set_yticks(np.arange(-0.5, len(available_years), 1), minor=True)
+        else:
+            ax.set_xticks(np.arange(-0.5, 53, 1), minor=True)
+            ax.set_yticks(np.arange(-0.5, 7, 1), minor=True)
+        ax.grid(which='minor', color='#e1e4e8', linestyle='-', linewidth=0.5, alpha=0.8)
+        
+        plt.tight_layout()
+        
+        # Statistiques adaptées selon le mode
+        if target_year == 'all':
+            # Statistiques pour mode multi-années
+            valid_temps = df['temperature_2m'].dropna()
+            if not valid_temps.empty:
+                temp_min = valid_temps.min()
+                temp_max = valid_temps.max()
+                temp_mean = valid_temps.mean()
+                data_points = len(valid_temps)
+                
+                caption = (f"🌡️ Calendrier thermique multi-années - {VILLE}\n"
+                          f"📊 {len(available_years)} années • {data_points} points de données\n"
+                          f"📊 Température moyenne: {temp_mean:.1f}°C\n"
+                          f"📈 Maximum absolu: {temp_max:.1f}°C\n"
+                          f"📉 Minimum absolu: {temp_min:.1f}°C")
+            else:
+                caption = f"🌡️ Calendrier thermique multi-années - {VILLE}\n❌ Aucune donnée valide"
+        else:
+            # Statistiques pour mode année unique
+            valid_temps = full_year['temperature_2m'].dropna()
+            if not valid_temps.empty:
+                temp_min = valid_temps.min()
+                temp_max = valid_temps.max()
+                temp_mean = valid_temps.mean()
+                data_coverage = len(valid_temps) / len(full_year) * 100
+                
+                caption = (f"🌡️ Calendrier thermique {target_year} - {VILLE}\n"
+                          f"📊 Température moyenne: {temp_mean:.1f}°C\n"
+                          f"📈 Maximum: {temp_max:.1f}°C\n"
+                          f"📉 Minimum: {temp_min:.1f}°C\n"
+                          f"📅 Couverture données: {data_coverage:.1f}%")
+            else:
+                caption = f"🌡️ Calendrier thermique {target_year} - {VILLE}\n❌ Aucune donnée valide"
+        
+        await send_graph(message.chat.id, fig, caption)
+        
+    except ValueError as e:
+        await message.reply("L'année doit être un nombre entier valide.")
+    except Exception as e:
+        await log_message(f"Erreur dans heatmap_command: {str(e)}\n{traceback.format_exc()}")
+        await message.reply("Erreur lors de la génération du calendrier thermique.")
+
+@router.message(Command("yearcompare"))
+async def get_year_compare_command(message: types.Message):
+    """Compare les données météo entre différentes années. Usage: /yearcompare [métrique]"""
+    try:
+        # Parser les arguments
+        args = message.text.split()
+        metric_arg = args[1].lower() if len(args) == 2 else 'temperature'
+        
+        # Mapping des métriques
+        metric_mapping = {
+            'temperature': 'temperature_2m',
+            'temp': 'temperature_2m',
+            'rain': 'precipitation',
+            'precipitation': 'precipitation',
+            'wind': 'windspeed_10m',
+            'pressure': 'pressure_msl'
+        }
+        
+        if metric_arg not in metric_mapping:
+            await message.reply(
+                f"Métrique '{metric_arg}' non reconnue.\n"
+                f"Utilisez: temperature, rain, wind, pressure\n"
+                f"Exemple: /yearcompare temperature"
+            )
+            return
+        
+        column_name = metric_mapping[metric_arg]
+        metric_info = get_metric_info(column_name)
+        
+        # Lire les données
+        if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
+            await message.reply("Aucune donnée météo disponible.")
+            return
+        
+        df = pd.read_csv(csv_filename)
+        if df.empty:
+            await message.reply("Aucune donnée disponible.")
+            return
+        
+        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
+        df.dropna(subset=['time'], inplace=True)
+        
+        if column_name not in df.columns:
+            await message.reply(f"Données pour {metric_info['name']} non disponibles.")
+            return
+        
+        # Convertir en heure locale et extraire date/heure
+        df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
+        df['year'] = df['local_time'].dt.year
+        df['month_day'] = df['local_time'].dt.strftime('%m-%d')
+        df['day_of_year'] = df['local_time'].dt.dayofyear
+        
+        # Vérifier qu'on a au moins 2 années de données
+        available_years = sorted(df['year'].unique())
+        if len(available_years) < 2:
+            await message.reply("Pas assez d'années de données pour faire une comparaison (minimum 2 années).")
+            return
+        
+        current_year = pd.Timestamp.now(tz='Europe/Berlin').year
+        current_day_of_year = pd.Timestamp.now(tz='Europe/Berlin').dayofyear
+        
+        # Calculer moyennes journalières par année
+        daily_means = df.groupby(['year', 'day_of_year'])[column_name].mean().reset_index()
+        
+        # Créer le graphique moderne
+        fig, ax = plt.subplots(1, 1, figsize=(16, 10))
+        fig.patch.set_facecolor('#f8f9fa')
+        
+        # Palette de couleurs moderne et distincte
+        modern_colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
+                        '#1abc9c', '#34495e', '#e67e22', '#95a5a6', '#16a085']
+        
+        # Tracer chaque année avec style moderne
+        for i, year in enumerate(available_years):
+            year_data = daily_means[daily_means['year'] == year]
+            
+            if not year_data.empty:
+                color = modern_colors[i % len(modern_colors)]
+                
+                # Style spécial pour l'année courante
+                if year == current_year:
+                    ax.plot(year_data['day_of_year'], year_data[column_name],
+                           color=color, linewidth=4, label=f'📍 {year} (actuelle)',
+                           alpha=0.95, zorder=5, marker='o', markersize=3,
+                           markevery=30)
+                else:
+                    ax.plot(year_data['day_of_year'], year_data[column_name],
+                           color=color, linewidth=2.5, label=f'📅 {year}',
+                           alpha=0.8, zorder=3)
+        
+        # Ligne verticale moderne pour "aujourd'hui"
+        ax.axvline(x=current_day_of_year, color='#e74c3c', linestyle='--',
+                  linewidth=3, alpha=0.9, zorder=10,
+                  label=f"📍 Aujourd'hui (jour {current_day_of_year})")
+        
+        # Zone d'intérêt moderne avec gradient
+        highlight_start = max(1, current_day_of_year - 15)
+        highlight_end = min(366, current_day_of_year + 15)
+        ax.axvspan(highlight_start, highlight_end, alpha=0.15, color='#e74c3c',
+                  label='🔍 Période actuelle ±15j', zorder=1)
+        
+        # Titre moderne avec emojis
+        ax.set_title(f'{metric_info["emoji"]} Comparaison annuelle - {metric_info["name"]} à {VILLE}\n'
+                    f'📊 Analyse de {len(available_years)} années de données',
+                    fontsize=18, fontweight='bold', color='#2c3e50', pad=25)
+        
+        # Labels modernes avec emojis
+        ax.set_xlabel('📅 Jour de l\'année', fontsize=14, color='#2c3e50', fontweight='bold')
+        ax.set_ylabel(f'{metric_info["emoji"]} {metric_info["name"]} ({metric_info["unit"]})',
+                     fontsize=14, color='#2c3e50', fontweight='bold')
+        
+        # Style moderne des axes
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('#bdc3c7')
+        ax.spines['bottom'].set_color('#bdc3c7')
+        ax.tick_params(colors='#34495e', labelsize=11)
+        
+        # Légende moderne
+        legend = ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left',
+                          frameon=True, shadow=True, fancybox=True,
+                          framealpha=0.95, edgecolor='#bdc3c7')
+        legend.get_frame().set_facecolor('#ffffff')
+        
+        # Marques des mois sur l'axe X
+        month_starts = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+        month_names = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 
+                      'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
+        ax.set_xticks(month_starts)
+        ax.set_xticklabels(month_names)
+        
+        plt.tight_layout()
+        
+        # Statistiques pour la période actuelle
+        current_period_data = daily_means[
+            (daily_means['day_of_year'] >= highlight_start) & 
+            (daily_means['day_of_year'] <= highlight_end)
+        ]
+        
+        stats_by_year = {}
+        for year in available_years:
+            year_period = current_period_data[current_period_data['year'] == year]
+            if not year_period.empty:
+                stats_by_year[year] = year_period[column_name].mean()
+        
+        # Préparer le texte des statistiques
+        stats_text = f"📊 Moyennes pour la période actuelle (±15j):\n"
+        for year, avg_val in sorted(stats_by_year.items()):
+            marker = " 👈" if year == current_year else ""
+            stats_text += f"{year}: {avg_val:.1f}{metric_info['unit']}{marker}\n"
+        
+        # Tendance générale
+        if len(stats_by_year) >= 3:
+            years_list = list(stats_by_year.keys())
+            values_list = list(stats_by_year.values())
+            
+            # Régression linéaire simple
+            if len(values_list) > 1:
+                slope = (values_list[-1] - values_list[0]) / (years_list[-1] - years_list[0])
+                trend = "↗️ hausse" if slope > 0 else "↘️ baisse" if slope < 0 else "➡️ stable"
+                stats_text += f"\n📈 Tendance générale: {trend} ({slope:.2f}{metric_info['unit']}/an)"
+        
+        caption = (f"{metric_info['emoji']} Comparaison {metric_info['name']} - {len(available_years)} années\n"
+                  f"📅 Années: {min(available_years)}-{max(available_years)}\n"
+                  f"{stats_text}")
+        
+        await send_graph(message.chat.id, fig, caption)
+        
+    except ValueError as e:
+        await message.reply("Paramètres invalides. Vérifiez la syntaxe de la commande.")
+    except Exception as e:
+        await log_message(f"Erreur dans yearcompare_command: {str(e)}\n{traceback.format_exc()}")
+        await message.reply("Erreur lors de la génération de la comparaison annuelle.")
 
 
 # --- Fonction principale pour démarrer le bot ---

@@ -3,3 +3,7 @@ aiohttp==3.11.18
 aiofiles==23.2.1
 configparser==7.0.0
 pandas==2.2.2
+matplotlib==3.10.3
+seaborn==0.13.2
+numpy==2.2.6
+pytz==2025.2

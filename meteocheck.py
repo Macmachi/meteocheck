@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Rymentz
-* VERSIONS : v1.9.1
+* VERSIONS : v1.9.2
 * NOTES : None
 *
 '''
@@ -1408,12 +1408,12 @@ async def start_command(message: types.Message):
             "/heatmap [année|all] - Ex: /heatmap 2024 ou /heatmap all\n"
             "/yearcompare [métrique] - Ex: /yearcompare temperature\n"
             "   Métriques: temperature, rain, wind, pressure\n"
-            "/sunshinecompare - Liste texte ensoleillement mensuel\n"
+            "/sunshinelist - Liste texte ensoleillement mensuel\n"
             "/top10 <métrique> - Ex: /top10 temperature\n"
             "   Métriques: temperature, rain, wind, pressure, uv, humidity\n\n"
             f"💡 **Exemples rapides :**\n"
             f"/graph rain 7 - Pluie des 7 derniers jours\n"
-            f"/sunshinecompare - Évolution ensoleillement\n"
+            f"/sunshinelist - Évolution ensoleillement\n"
             f"/top10 wind - Vents les plus forts\n"
             f"/daterange 2024-06-01 2024-08-31 - Été 2024\n\n"
             f"N'hésitez pas à explorer ces fonctionnalités pour analyser la météo à {welcome_ville}!"
@@ -2028,7 +2028,7 @@ async def get_forecast_graph_command(message: types.Message):
 
 @router.message(Command("graph"))
 async def get_graph_data_command(message: types.Message):
-    """Génère un graphique pour une métrique spécifique. Usage: /graph temperature"""
+    """Génère 2 graphiques pour une métrique spécifique (courbe + barres). Usage: /graph temperature"""
     try:
         # Parser les arguments
         args = message.text.split()
@@ -2104,9 +2104,6 @@ async def get_graph_data_command(message: types.Message):
         # Convertir en heure locale
         df_period['local_time'] = df_period['time'].dt.tz_convert('Europe/Berlin')
         
-        # Créer le graphique avec style moderne
-        fig, ax = plt.subplots(1, 1, figsize=(14, 8))
-        
         # Couleurs modernes selon la métrique
         colors = {
             'temperature_2m': '#e74c3c',      # Rouge moderne
@@ -2119,8 +2116,22 @@ async def get_graph_data_command(message: types.Message):
         
         color = colors.get(column_name, '#34495e')
         
+        # Statistiques communes
+        data_values = df_period[column_name]
+        mean_val = data_values.mean()
+        max_val = data_values.max()
+        min_val = data_values.min()
+        
+        base_caption = (f"{metric_info['emoji']} {metric_info['name']} - {days} derniers jours\n"
+                       f"📊 Moyenne: {mean_val:.1f}{metric_info['unit']}\n"
+                       f"📈 Maximum: {max_val:.1f}{metric_info['unit']}\n"
+                       f"📉 Minimum: {min_val:.1f}{metric_info['unit']}")
+        
+        # === GRAPHIQUE 1: COURBE (style actuel) ===
+        fig1, ax1 = plt.subplots(1, 1, figsize=(14, 8))
+        
         if metric_arg in ['rain', 'precipitation']:
-            # Graphique en barres moderne pour les précipitations avec gradient MeteoSuisse
+            # Graphique en barres pour les précipitations avec gradient MeteoSuisse
             def get_precipitation_color(precip_mm):
                 """Couleurs graduées selon l'intensité des précipitations (style MeteoSuisse)."""
                 if precip_mm < 0.1:
@@ -2141,8 +2152,8 @@ async def get_graph_data_command(message: types.Message):
                     return '#991b1b'      # Rouge foncé (extrême)
             
             colors_precip = [get_precipitation_color(p) for p in df_period[column_name]]
-            bars = ax.bar(df_period['local_time'], df_period[column_name],
-                         width=0.02, color=colors_precip, alpha=0.9, edgecolor='white', linewidth=0.5)
+            bars = ax1.bar(df_period['local_time'], df_period[column_name],
+                          width=0.02, color=colors_precip, alpha=0.9, edgecolor='white', linewidth=0.5)
             
             # Ajouter légende des couleurs si précipitations significatives
             max_precip = df_period[column_name].max()
@@ -2161,95 +2172,169 @@ async def get_graph_data_command(message: types.Message):
                 else:
                     legend_text += "💧 Bruine"
                 
-                ax.text(0.02, 0.95, legend_text, transform=ax.transAxes,
-                       fontsize=10, verticalalignment='top',
-                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+                ax1.text(0.02, 0.95, legend_text, transform=ax1.transAxes,
+                        fontsize=10, verticalalignment='top',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
         else:
             # Graphique en ligne moderne avec zone remplie
-            ax.fill_between(df_period['local_time'], df_period[column_name],
-                           alpha=0.3, color=color, interpolate=True)
-            ax.plot(df_period['local_time'], df_period[column_name],
-                   color=color, linewidth=3, alpha=0.9, marker='o',
-                   markersize=2, markerfacecolor='white', markeredgecolor=color)
+            ax1.fill_between(df_period['local_time'], df_period[column_name],
+                            alpha=0.3, color=color, interpolate=True)
+            ax1.plot(df_period['local_time'], df_period[column_name],
+                    color=color, linewidth=3, alpha=0.9, marker='o',
+                    markersize=2, markerfacecolor='white', markeredgecolor=color)
             
             # Moyenne mobile avec style moderne
             if len(df_period) > 24:
                 df_period['moving_avg'] = df_period[column_name].rolling(window=24, center=True).mean()
-                ax.plot(df_period['local_time'], df_period['moving_avg'],
-                       color='#2c3e50', linewidth=3, alpha=0.8,
-                       linestyle='--', label='📈 Moyenne mobile 24h')
-                ax.legend(loc='upper right', frameon=True, shadow=True,
-                         fancybox=True, framealpha=0.9)
+                ax1.plot(df_period['local_time'], df_period['moving_avg'],
+                        color='#2c3e50', linewidth=3, alpha=0.8,
+                        linestyle='--', label='📈 Moyenne mobile 24h')
+                ax1.legend(loc='upper right', frameon=True, shadow=True,
+                          fancybox=True, framealpha=0.9)
         
-        # Titre et labels modernes avec emojis
-        ax.set_title(f'{metric_info["emoji"]} {metric_info["name"]} - {days} derniers jours à {VILLE}',
-                    fontsize=16, fontweight='bold', color='#2c3e50', pad=20)
-        ax.set_ylabel(f'{metric_info["emoji"]} {metric_info["name"]} ({metric_info["unit"]})',
-                     fontsize=12, color='#2c3e50')
-        ax.set_xlabel('📅 Date', fontsize=12, color='#2c3e50')
+        # Titre et style pour graphique 1
+        ax1.set_title(f'📊 {metric_info["emoji"]} {metric_info["name"]} (courbe) - {days} derniers jours à {VILLE}',
+                     fontsize=16, fontweight='bold', color='#2c3e50', pad=20)
+        ax1.set_ylabel(f'{metric_info["emoji"]} {metric_info["name"]} ({metric_info["unit"]})',
+                      fontsize=12, color='#2c3e50')
+        ax1.set_xlabel('📅 Date', fontsize=12, color='#2c3e50')
         
         # Style moderne des axes
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_color('#bdc3c7')
-        ax.spines['bottom'].set_color('#bdc3c7')
-        ax.tick_params(colors='#34495e')
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
+        ax1.spines['left'].set_color('#bdc3c7')
+        ax1.spines['bottom'].set_color('#bdc3c7')
+        ax1.tick_params(colors='#34495e')
         
-        # Formatage de l'axe temporel amélioré pour meilleure lisibilité
-        if days <= 1:
-            # 1 jour : afficher toutes les 2 heures
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-            ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
-            ax.xaxis.set_minor_locator(mdates.HourLocator(interval=1))
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, fontsize=10)
-        elif days <= 3:
-            # 2-3 jours : afficher toutes les 6 heures avec date + heure
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m\n%H:%M'))
-            ax.xaxis.set_major_locator(mdates.HourLocator(interval=6))
-            ax.xaxis.set_minor_locator(mdates.HourLocator(interval=3))
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=0, fontsize=9, ha='center')
-        elif days <= 7:
-            # 4-7 jours : afficher 2 fois par jour (midi et minuit) avec date
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m\n%H:%M'))
-            ax.xaxis.set_major_locator(mdates.HourLocator(byhour=[0, 12]))
-            ax.xaxis.set_minor_locator(mdates.HourLocator(interval=6))
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=0, fontsize=9, ha='center')
+        # Formatage temporal et grille
+        if days <= 7:
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m\n%H:%M'))
+            ax1.xaxis.set_major_locator(mdates.HourLocator(interval=12))
         elif days <= 30:
-            # 8-30 jours : afficher par jour avec date seulement
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
-            ax.xaxis.set_major_locator(mdates.DayLocator(interval=3))
-            ax.xaxis.set_minor_locator(mdates.DayLocator(interval=1))
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, fontsize=10)
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
+            ax1.xaxis.set_major_locator(mdates.DayLocator(interval=3))
         else:
-            # 30+ jours : afficher par semaine
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
-            ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
-            ax.xaxis.set_minor_locator(mdates.DayLocator(interval=2))
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, fontsize=10)
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
+            ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
         
-        # Activer la grille mineure pour une meilleure lisibilité
-        ax.grid(True, which='minor', alpha=0.3, linestyle=':', linewidth=0.5)
-        ax.grid(True, which='major', alpha=0.6, linestyle='-', linewidth=0.8)
+        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, fontsize=10)
+        ax1.grid(True, alpha=0.3, linestyle=':', linewidth=0.5)
         plt.tight_layout()
         
-        # Statistiques
-        data_values = df_period[column_name]
-        mean_val = data_values.mean()
-        max_val = data_values.max()
-        min_val = data_values.min()
+        # Envoyer le premier graphique (courbe)
+        caption1 = f"📊 Graphique en courbe\n{base_caption}"
+        await send_graph(message.chat.id, fig1, caption1)
         
-        caption = (f"{metric_info['emoji']} {metric_info['name']} - {days} derniers jours\n"
-                  f"📊 Moyenne: {mean_val:.1f}{metric_info['unit']}\n"
-                  f"📈 Maximum: {max_val:.1f}{metric_info['unit']}\n"
-                  f"📉 Minimum: {min_val:.1f}{metric_info['unit']}")
+        # === GRAPHIQUE 2: BARRES VERTICALES (style sunshine - par mois/année) ===
+        fig2, ax2 = plt.subplots(1, 1, figsize=(16, 10))
+        fig2.patch.set_facecolor('#f8f9fa')
         
-        await send_graph(message.chat.id, fig, caption)
+        # Préparer données mensuelles groupées par année (style sunshine)
+        df_bars = df_period.copy()
+        df_bars['year'] = df_bars['local_time'].dt.year
+        df_bars['month'] = df_bars['local_time'].dt.month
+        
+        # Calculer valeurs mensuelles selon le type de métrique
+        if metric_arg in ['rain', 'precipitation']:
+            monthly_data = df_bars.groupby(['year', 'month'])[column_name].sum().reset_index()
+        else:
+            monthly_data = df_bars.groupby(['year', 'month'])[column_name].mean().reset_index()
+        
+        if monthly_data.empty:
+            # Fallback vers données journalières si pas assez pour mensuel
+            df_bars['date'] = df_bars['local_time'].dt.date
+            if metric_arg in ['rain', 'precipitation']:
+                daily_data = df_bars.groupby('date')[column_name].sum().reset_index()
+            else:
+                daily_data = df_bars.groupby('date')[column_name].mean().reset_index()
+            
+            daily_data['datetime'] = pd.to_datetime(daily_data['date'])
+            bars = ax2.bar(daily_data['datetime'], daily_data[column_name],
+                          width=0.8, color=color, alpha=0.8, edgecolor='white', linewidth=1)
+            
+            ax2.set_title(f'📊 {metric_info["emoji"]} {metric_info["name"]} (barres journalières) - {days} derniers jours à {VILLE}',
+                         fontsize=16, fontweight='bold', color='#2c3e50', pad=20)
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
+            ax2.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, days//15)))
+        else:
+            # Style sunshine : barres groupées par année pour chaque mois
+            available_years = sorted(monthly_data['year'].unique())
+            available_months = sorted(monthly_data['month'].unique())
+            
+            # Noms des mois
+            month_names = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun',
+                          'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
+            
+            # Couleurs pour les années
+            year_colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6']
+            
+            # Créer les barres groupées
+            x_positions = np.arange(len(available_months))
+            n_years = len(available_years)
+            width = 0.8 / n_years
+            
+            for i, year in enumerate(available_years):
+                year_data = monthly_data[monthly_data['year'] == year]
+                values = []
+                
+                for month in available_months:
+                    month_row = year_data[year_data['month'] == month]
+                    if not month_row.empty:
+                        values.append(month_row[column_name].iloc[0])
+                    else:
+                        values.append(0)
+                
+                year_color = year_colors[i % len(year_colors)]
+                offset = (i - n_years/2 + 0.5) * width
+                
+                bars = ax2.bar(x_positions + offset, values, width,
+                              label=f'📅 {year}', color=year_color,
+                              alpha=0.8, edgecolor='white', linewidth=1)
+                
+                # Ajouter valeurs sur les barres
+                for j, bar in enumerate(bars):
+                    height = bar.get_height()
+                    if height > 0:
+                        ax2.text(bar.get_x() + bar.get_width()/2, height + max(values)*0.01,
+                               f'{height:.0f}', ha='center', va='bottom',
+                               fontsize=8, fontweight='bold', color=year_color)
+            
+            # Configuration des axes pour style mensuel
+            ax2.set_xticks(x_positions)
+            ax2.set_xticklabels([month_names[m-1] for m in available_months])
+            ax2.set_title(f'📊 {metric_info["emoji"]} {metric_info["name"]} (barres mensuelles) - {len(available_years)} années à {VILLE}',
+                         fontsize=16, fontweight='bold', color='#2c3e50', pad=20)
+            
+            # Légende moderne
+            legend = ax2.legend(bbox_to_anchor=(1.02, 1), loc='upper left',
+                               frameon=True, shadow=True, fancybox=True,
+                               framealpha=0.95, edgecolor='#bdc3c7')
+            legend.get_frame().set_facecolor('#ffffff')
+        
+        # Style commun des axes
+        ax2.set_ylabel(f'{metric_info["emoji"]} {metric_info["name"]} ({metric_info["unit"]})',
+                      fontsize=14, color='#2c3e50', fontweight='bold')
+        ax2.set_xlabel('📅 Période', fontsize=14, color='#2c3e50', fontweight='bold')
+        
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
+        ax2.spines['left'].set_color('#bdc3c7')
+        ax2.spines['bottom'].set_color('#bdc3c7')
+        ax2.tick_params(colors='#34495e', labelsize=11)
+        
+        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, fontsize=10)
+        ax2.grid(True, alpha=0.3, linestyle=':', linewidth=1, axis='y')
+        plt.tight_layout()
+        
+        # Envoyer le deuxième graphique (barres)
+        caption2 = f"📊 Graphique en barres\n{base_caption}"
+        await send_graph(message.chat.id, fig2, caption2)
         
     except ValueError as e:
         await message.reply("Le nombre de jours doit être un nombre entier valide.")
     except Exception as e:
         await log_message(f"Erreur dans graphdata_command: {str(e)}\n{traceback.format_exc()}")
-        await message.reply("Erreur lors de la génération du graphique.")
+        await message.reply("Erreur lors de la génération des graphiques.")
 
 @router.message(Command("heatmap"))
 async def get_heatmap_command(message: types.Message):
@@ -2496,9 +2581,9 @@ async def get_heatmap_command(message: types.Message):
         await log_message(f"Erreur dans heatmap_command: {str(e)}\n{traceback.format_exc()}")
         await message.reply("Erreur lors de la génération du calendrier thermique.")
 
-@router.message(Command("sunshinecompare"))
-async def get_sunshine_compare_command(message: types.Message):
-    """Affiche un résumé textuel mensuel de l'ensoleillement. Usage: /sunshinecompare"""
+@router.message(Command("sunshinelist"))
+async def get_sunshine_list_command(message: types.Message):
+    """Affiche un résumé textuel mensuel de l'ensoleillement. Usage: /sunshinelist"""
     try:
         if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
             await message.reply("Aucune donnée disponible pour calculer l'ensoleillement.")

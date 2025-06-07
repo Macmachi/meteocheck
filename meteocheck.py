@@ -1,8 +1,8 @@
 '''
 *
 * PROJET : MeteoCheck
-* AUTEUR : Arnaud R.
-* VERSIONS : v1.8.0
+* AUTEUR : Rymentz
+* VERSIONS : v1.9.0
 * NOTES : None
 *
 '''
@@ -91,6 +91,44 @@ LONGITUDE = config['LOCATION']['LONGITUDE']
 
 weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&hourly=temperature_2m,precipitation_probability,precipitation,pressure_msl,windspeed_10m,uv_index,relativehumidity_2m&timezone=GMT&forecast_days=2&past_days=2&models=best_match&timeformat=unixtime"
 
+# ================================
+# SYSTÈME DE CACHE PRÉVISIONS
+# ================================
+cached_forecast_data = {
+    'df_seven_hours': pd.DataFrame(),
+    'df_twenty_four_hours': pd.DataFrame(),
+    'last_update': None,
+    'cache_duration_minutes': 5  # Cache valide pendant 5 minutes
+}
+
+def is_cache_valid():
+    """Vérifie si le cache des prévisions est encore valide."""
+    if cached_forecast_data['last_update'] is None:
+        return False
+    
+    now = pd.Timestamp.now(tz='UTC')
+    time_since_update = (now - cached_forecast_data['last_update']).total_seconds() / 60
+    return time_since_update < cached_forecast_data['cache_duration_minutes']
+
+async def get_cached_forecast_data():
+    """Retourne les données de prévision depuis le cache si valide, sinon depuis l'API."""
+    if is_cache_valid():
+        # Cache valide, retourner les données stockées
+        return (cached_forecast_data['df_seven_hours'].copy(),
+                cached_forecast_data['df_twenty_four_hours'].copy())
+    else:
+        # Cache expiré, appeler l'API et mettre à jour le cache
+        await log_message("Cache des prévisions expiré, récupération depuis l'API...")
+        df_seven, df_twenty_four = await get_weather_data()
+        
+        # Mettre à jour le cache
+        cached_forecast_data['df_seven_hours'] = df_seven.copy()
+        cached_forecast_data['df_twenty_four_hours'] = df_twenty_four.copy()
+        cached_forecast_data['last_update'] = pd.Timestamp.now(tz='UTC')
+        
+        await log_message(f"Cache des prévisions mis à jour avec {len(df_seven)} + {len(df_twenty_four)} entrées")
+        return df_seven, df_twenty_four
+
 # Initialisation du Bot et du Dispatcher pour aiogram 3.x
 bot = Bot(token=TOKEN_TELEGRAM)
 storage = MemoryStorage()
@@ -166,11 +204,35 @@ sent_alerts = {
     'pressure_msl': None
 }
 
+# Advanced record tracking system
+predicted_records = {
+    'temperature_2m': {'max': {}, 'min': {}},
+    'precipitation': {'max': {}},
+    'windspeed_10m': {'max': {}},
+    'pressure_msl': {'max': {}},
+    'uv_index': {'max': {}}
+}
+
+# Structure: predicted_records[metric][type][record_id] = {
+#   'value': float,
+#   'time': datetime,
+#   'confidence': float,
+#   'first_detected': datetime,
+#   'last_seen': datetime,
+#   'notified': bool
+# }
+
+# History of sent record alerts (to avoid spam but allow important updates)
+record_alert_history = []
+# Structure: [{'type': str, 'metric': str, 'value': float, 'time': datetime, 'sent_at': datetime}]
+
 # Alert and message sending functions
 async def schedule_jobs():
     """Tâche planifiée pour vérifier la météo périodiquement."""
     while True:
         await check_weather()
+        # Vérifier les changements dans les records prévus (notifications d'annulation)
+        await check_predicted_record_changes()
         await asyncio.sleep(60)
 
 async def send_alert(message_text, row=None, alert_column=None):
@@ -400,6 +462,11 @@ async def check_weather():
     try:
         df_next_seven_hours, df_next_twenty_four_hours = await get_weather_data()
         
+        # Mettre à jour le cache des prévisions
+        cached_forecast_data['df_seven_hours'] = df_next_seven_hours.copy()
+        cached_forecast_data['df_twenty_four_hours'] = df_next_twenty_four_hours.copy()
+        cached_forecast_data['last_update'] = pd.Timestamp.now(tz='UTC')
+        
         if df_next_seven_hours.empty and df_next_twenty_four_hours.empty:
             await log_message("Aucune donnée obtenue de get_weather_data dans check_weather. Prochaine vérification dans 1 minute.")
             return
@@ -545,6 +612,272 @@ async def detect_meteorological_bomb(df_forecast):
         await log_message(f"Erreur dans detect_meteorological_bomb: {str(e)}\n{traceback.format_exc()}")
 
 
+def calculate_confidence_score(forecast_time, current_time):
+    """Calcule un score de confiance basé sur la proximité temporelle de la prévision.
+    
+    Args:
+        forecast_time: Datetime de la prévision
+        current_time: Datetime actuel
+    
+    Returns:
+        float: Score entre 0 et 1 (1 = très fiable, 0 = peu fiable)
+    """
+    try:
+        time_diff_hours = abs((forecast_time - current_time).total_seconds()) / 3600
+        
+        if time_diff_hours <= 3:
+            return 1.0  # Très fiable (0-3h)
+        elif time_diff_hours <= 12:
+            return 0.8  # Fiable (3-12h)
+        elif time_diff_hours <= 24:
+            return 0.6  # Modérément fiable (12-24h)
+        elif time_diff_hours <= 48:
+            return 0.4  # Peu fiable (24-48h)
+        else:
+            return 0.2  # Très peu fiable (48h+)
+    except:
+        return 0.5  # Fallback
+
+async def check_predicted_record_changes():
+    """Vérifie les changements dans les records prévus et notifie si nécessaire."""
+    global predicted_records
+    
+    try:
+        current_time = pd.Timestamp.now(tz='UTC')
+        changes_detected = []
+        
+        for metric in predicted_records:
+            for record_type in predicted_records[metric]:
+                records_to_remove = []
+                
+                for record_id, record_info in predicted_records[metric][record_type].items():
+                    # Vérifier si le record est trop ancien sans mise à jour
+                    time_since_last_seen = (current_time - record_info['last_seen']).total_seconds() / 3600
+                    time_until_forecast = (record_info['time'] - current_time).total_seconds() / 3600
+                    
+                    # Délai d'expiration adaptatif selon la proximité du record
+                    if time_until_forecast <= 6:
+                        # Record très proche : expiration après 2h sans mise à jour
+                        expiration_hours = 2
+                    elif time_until_forecast <= 24:
+                        # Record proche : expiration après 6h sans mise à jour
+                        expiration_hours = 6
+                    else:
+                        # Record lointain : expiration après 12h sans mise à jour
+                        expiration_hours = 12
+                    
+                    # Vérifier si le record a expiré (pas vu depuis trop longtemps)
+                    if time_since_last_seen > expiration_hours:
+                        # Record disparu - notification rapide d'annulation
+                        if record_info['notified']:
+                            changes_detected.append({
+                                'type': 'expired',
+                                'metric': metric,
+                                'record_type': record_type,
+                                'value': record_info['value'],
+                                'time': record_info['time'],
+                                'confidence': record_info['confidence'],
+                                'missing_hours': time_since_last_seen
+                            })
+                        records_to_remove.append(record_id)
+                    
+                    # Nettoyage supplémentaire : supprimer les records passés
+                    elif time_until_forecast < -2:  # Record passé depuis plus de 2h
+                        records_to_remove.append(record_id)
+                
+                # Supprimer les records expirés
+                for record_id in records_to_remove:
+                    del predicted_records[metric][record_type][record_id]
+        
+        # Envoyer les notifications de changements
+        for change in changes_detected:
+            await notify_record_change(change)
+            
+    except Exception as e:
+        await log_message(f"Erreur dans check_predicted_record_changes: {str(e)}")
+
+async def notify_record_change(change_info):
+    """Notifie un changement dans les records prévus."""
+    try:
+        metric_info = get_metric_info(change_info['metric'])
+        time_local = change_info['time'].tz_convert('Europe/Berlin')
+        
+        if change_info['type'] == 'expired':
+            confidence_text = f"{change_info['confidence']*100:.0f}%"
+            missing_hours = change_info.get('missing_hours', 0)
+            
+            # Déterminer l'urgence du message selon la proximité
+            time_until_forecast = (change_info['time'] - pd.Timestamp.now(tz='UTC')).total_seconds() / 3600
+            
+            if time_until_forecast <= 6:
+                urgency_emoji = "⚠️"
+                urgency_text = "URGENT - "
+            elif time_until_forecast <= 24:
+                urgency_emoji = "📉"
+                urgency_text = ""
+            else:
+                urgency_emoji = "📋"
+                urgency_text = ""
+            
+            message = (
+                f"{urgency_emoji} {urgency_text}Mise à jour prévisions : Le record potentiel de {metric_info['name']} "
+                f"({change_info['value']:.1f}{metric_info['unit']}) prévu pour "
+                f"{time_local.strftime('%d/%m à %H:%M')} n'apparaît plus dans les prévisions depuis "
+                f"{missing_hours:.1f}h. (Confiance était de {confidence_text})"
+            )
+            await send_alert(message)
+            await log_message(f"Record potentiel expiré notifié: {change_info['metric']} {change_info['value']} (disparu depuis {missing_hours:.1f}h)")
+            
+    except Exception as e:
+        await log_message(f"Erreur dans notify_record_change: {str(e)}")
+
+async def update_predicted_records(row_alert, alert_column, is_forecast=True):
+    """Met à jour le système de suivi des records prévus."""
+    global predicted_records
+    
+    if not is_forecast:
+        return  # On ne suit que les prévisions
+    
+    try:
+        # Vérifier que la métrique est supportée
+        if alert_column not in predicted_records:
+            await log_message(f"Métrique {alert_column} non supportée pour le suivi des records prévus.")
+            return
+        
+        current_time = pd.Timestamp.now(tz='UTC')
+        forecast_time = row_alert['time']
+        confidence = calculate_confidence_score(forecast_time, current_time)
+        
+        # Identifier les types de records à vérifier selon la métrique
+        record_types = ['max']
+        if alert_column == 'temperature_2m' and 'min' in predicted_records[alert_column]:
+            record_types.append('min')
+        
+        for record_type in record_types:
+            # Vérifier que le type de record existe pour cette métrique
+            if record_type not in predicted_records[alert_column]:
+                continue
+                
+            value = row_alert[alert_column]
+            
+            # Créer un ID unique pour ce record basé sur la métrique, type et valeur
+            record_id = f"{alert_column}_{record_type}_{value:.2f}_{forecast_time.strftime('%Y%m%d%H')}"
+            
+            # Vérifier si c'est un nouveau record ou une mise à jour
+            existing_record = predicted_records[alert_column][record_type].get(record_id)
+            
+            if existing_record:
+                # Mise à jour d'un record existant
+                existing_record['last_seen'] = current_time
+                existing_record['confidence'] = max(existing_record['confidence'], confidence)
+            else:
+                # Nouveau record potentiel
+                predicted_records[alert_column][record_type][record_id] = {
+                    'value': value,
+                    'time': forecast_time,
+                    'confidence': confidence,
+                    'first_detected': current_time,
+                    'last_seen': current_time,
+                    'notified': False
+                }
+                
+    except Exception as e:
+        await log_message(f"Erreur dans update_predicted_records: {str(e)}")
+
+async def should_notify_record(record_info, metric, record_type):
+    """Détermine si un record doit être notifié en évitant le spam."""
+    global record_alert_history
+    
+    try:
+        current_time = pd.Timestamp.now(tz='UTC')
+        
+        # Critères pour notifier :
+        # 1. Confiance suffisante (>= 0.6)
+        # 2. Pas déjà notifié récemment pour une valeur similaire
+        # 3. Record pas trop lointain (< 48h, limite de l'API)
+        
+        if record_info['confidence'] < 0.6:
+            return False
+        
+        time_diff_hours = abs((record_info['time'] - current_time).total_seconds()) / 3600
+        if time_diff_hours > 48:  # Limite de l'API
+            return False
+        
+        # Vérifier l'historique récent (délai adaptatif selon proximité du record)
+        # Plus le record est proche, plus on peut notifier fréquemment les changements
+        if time_diff_hours <= 3:
+            # Record dans les 3h : notifications toutes les 30 minutes
+            lookback_hours = 0.5
+        elif time_diff_hours <= 12:
+            # Record dans les 12h : notifications toutes les 2h
+            lookback_hours = 2
+        elif time_diff_hours <= 24:
+            # Record dans les 24h : notifications toutes les 6h
+            lookback_hours = 6
+        else:
+            # Record plus lointain : notifications toutes les 12h
+            lookback_hours = 12
+            
+        cutoff_time = current_time - pd.Timedelta(hours=lookback_hours)
+        recent_alerts = [
+            alert for alert in record_alert_history 
+            if alert['sent_at'] > cutoff_time 
+            and alert['metric'] == metric 
+            and alert['type'] == record_type
+        ]
+        
+        # Éviter les notifications répétitives pour des valeurs similaires
+        for alert in recent_alerts:
+            value_diff = abs(alert['value'] - record_info['value'])
+            # Seuils adaptatifs selon la métrique
+            if metric == 'temperature_2m':
+                threshold = 0.1  # 0.1°C pour température
+            elif metric == 'precipitation':
+                threshold = 0.5  # 0.5mm pour précipitations
+            elif metric == 'windspeed_10m':
+                threshold = 2.0  # 2 km/h pour vent
+            elif metric == 'pressure_msl':
+                threshold = 1.0  # 1 hPa pour pression
+            elif metric == 'uv_index':
+                threshold = 0.2  # 0.2 pour UV
+            else:
+                threshold = 0.5  # Défaut
+                
+            if value_diff < threshold:
+                return False
+        
+        return True
+        
+    except Exception as e:
+        await log_message(f"Erreur dans should_notify_record: {str(e)}")
+        return False
+
+async def log_record_alert(metric, record_type, value, forecast_time):
+    """Enregistre l'envoi d'une alerte de record."""
+    global record_alert_history
+    
+    try:
+        current_time = pd.Timestamp.now(tz='UTC')
+        
+        # Ajouter à l'historique
+        record_alert_history.append({
+            'type': record_type,
+            'metric': metric,
+            'value': value,
+            'time': forecast_time,
+            'sent_at': current_time
+        })
+        
+        # Nettoyer l'historique (garder seulement les 48 dernières heures)
+        cutoff_time = current_time - pd.Timedelta(hours=48)
+        record_alert_history = [
+            alert for alert in record_alert_history 
+            if alert['sent_at'] > cutoff_time
+        ]
+        
+    except Exception as e:
+        await log_message(f"Erreur dans log_record_alert: {str(e)}")
+
 async def check_records(row_alert, alert_column, is_forecast=True):
     """Vérifie si une valeur entrante bat un record annuel ET historique absolu.
     Args:
@@ -553,6 +886,8 @@ async def check_records(row_alert, alert_column, is_forecast=True):
     Vérifie 2 types de records :
     - Record annuel : comparaison avec l'année en cours uniquement
     - Record historique absolu : comparaison avec tout l'historique disponible
+    
+    Version améliorée avec gestion intelligente des notifications pour les prévisions.
     """
     try:
         if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
@@ -579,26 +914,89 @@ async def check_records(row_alert, alert_column, is_forecast=True):
         df_current_year = df[df['time'].dt.year == current_year].copy()
         time_local = row_alert['time'].tz_convert('Europe/Berlin')
 
+        # Mettre à jour le suivi des records prévus si c'est une prévision
+        if is_forecast:
+            await update_predicted_records(row_alert, alert_column, is_forecast)
+
+        record_detected = False
+
         # === VÉRIFICATION RECORDS ANNUELS (année courante) ===
         if df_current_year.empty:
             await log_message(f"Aucune donnée pour l'année en cours ({current_year}), impossible de vérifier les records annuels pour {alert_column}.")
             # Si c'est la première donnée de l'année, elle établit le record initial
-            await send_alert(f"🏆 Info météo : Première donnée de l'année pour {alert_column} : {row_alert[alert_column]} à {time_local.strftime('%H:%M')}.")
+            if not is_forecast:  # Seulement pour les données réelles
+                await send_alert(f"🏆 Info météo : Première donnée de l'année pour {alert_column} : {row_alert[alert_column]} à {time_local.strftime('%H:%M')}.")
         else:
             # Vérification du record max annuel
             max_value_year = df_current_year[alert_column].max()
             if pd.notna(row_alert[alert_column]) and row_alert[alert_column] > max_value_year:
-                prefix = "Potentiel nouveau" if is_forecast else "Nouveau"
-                suffix = "prévu" if is_forecast else "confirmé"
-                await send_alert(f"🏆 Alerte météo : {prefix} record annuel {current_year} (max) pour {alert_column} : {row_alert[alert_column]} (précédent: {max_value_year}) {suffix} à {time_local.strftime('%H:%M')}.")
+                # Trouver la date de l'ancien record
+                max_idx = df_current_year[alert_column].idxmax()
+                previous_record_time = df_current_year.loc[max_idx, 'time'].tz_convert('Europe/Berlin')
+                previous_record_date = previous_record_time.strftime('%d/%m/%Y')
+                
+                record_detected = True
+                record_info = {
+                    'value': row_alert[alert_column],
+                    'time': row_alert['time'],
+                    'confidence': calculate_confidence_score(row_alert['time'], pd.Timestamp.now(tz='UTC')) if is_forecast else 1.0,
+                    'notified': False
+                }
+                
+                if is_forecast:
+                    # Pour les prévisions, vérifier si on doit notifier
+                    if await should_notify_record(record_info, alert_column, 'max'):
+                        prefix = "Potentiel nouveau"
+                        suffix = "prévu"
+                        confidence_text = f" (confiance: {record_info['confidence']*100:.0f}%)" if record_info['confidence'] < 1.0 else ""
+                        await send_alert(f"🏆 Alerte météo : {prefix} record annuel {current_year} (max) pour {alert_column} : {row_alert[alert_column]} (précédent: {max_value_year} le {previous_record_date}) {suffix} à {time_local.strftime('%H:%M')}{confidence_text}.")
+                        await log_record_alert(alert_column, 'max', row_alert[alert_column], row_alert['time'])
+                        # Marquer comme notifié dans le système de suivi
+                        for record_id, stored_record in predicted_records[alert_column]['max'].items():
+                            if abs(stored_record['value'] - row_alert[alert_column]) < 0.01:
+                                stored_record['notified'] = True
+                                break
+                else:
+                    # Pour les données historiques, toujours notifier
+                    prefix = "Nouveau"
+                    suffix = "confirmé"
+                    await send_alert(f"🏆 Alerte météo : {prefix} record annuel {current_year} (max) pour {alert_column} : {row_alert[alert_column]} (précédent: {max_value_year} le {previous_record_date}) {suffix} à {time_local.strftime('%H:%M')}.")
 
             # Vérification du record min annuel (spécifiquement pour la température)
             if alert_column == 'temperature_2m':
                 min_value_year = df_current_year[alert_column].min()
                 if pd.notna(row_alert[alert_column]) and row_alert[alert_column] < min_value_year:
-                    prefix = "Potentiel nouveau" if is_forecast else "Nouveau"
-                    suffix = "prévu" if is_forecast else "confirmé"
-                    await send_alert(f"🏆 Alerte météo : {prefix} record annuel {current_year} (min) pour {alert_column} : {row_alert[alert_column]} (précédent: {min_value_year}) {suffix} à {time_local.strftime('%H:%M')}.")
+                    # Trouver la date de l'ancien record
+                    min_idx = df_current_year[alert_column].idxmin()
+                    previous_record_time = df_current_year.loc[min_idx, 'time'].tz_convert('Europe/Berlin')
+                    previous_record_date = previous_record_time.strftime('%d/%m/%Y')
+                    
+                    record_detected = True
+                    record_info = {
+                        'value': row_alert[alert_column],
+                        'time': row_alert['time'],
+                        'confidence': calculate_confidence_score(row_alert['time'], pd.Timestamp.now(tz='UTC')) if is_forecast else 1.0,
+                        'notified': False
+                    }
+                    
+                    if is_forecast:
+                        # Pour les prévisions, vérifier si on doit notifier
+                        if await should_notify_record(record_info, alert_column, 'min'):
+                            prefix = "Potentiel nouveau"
+                            suffix = "prévu"
+                            confidence_text = f" (confiance: {record_info['confidence']*100:.0f}%)" if record_info['confidence'] < 1.0 else ""
+                            await send_alert(f"🏆 Alerte météo : {prefix} record annuel {current_year} (min) pour {alert_column} : {row_alert[alert_column]} (précédent: {min_value_year} le {previous_record_date}) {suffix} à {time_local.strftime('%H:%M')}{confidence_text}.")
+                            await log_record_alert(alert_column, 'min', row_alert[alert_column], row_alert['time'])
+                            # Marquer comme notifié dans le système de suivi
+                            for record_id, stored_record in predicted_records[alert_column]['min'].items():
+                                if abs(stored_record['value'] - row_alert[alert_column]) < 0.01:
+                                    stored_record['notified'] = True
+                                    break
+                    else:
+                        # Pour les données historiques, toujours notifier
+                        prefix = "Nouveau"
+                        suffix = "confirmé"
+                        await send_alert(f"🏆 Alerte météo : {prefix} record annuel {current_year} (min) pour {alert_column} : {row_alert[alert_column]} (précédent: {min_value_year} le {previous_record_date}) {suffix} à {time_local.strftime('%H:%M')}.")
 
         # === VÉRIFICATION RECORDS HISTORIQUES ABSOLUS (tout l'historique) ===
         available_years = sorted(df['time'].dt.year.unique())
@@ -607,17 +1005,63 @@ async def check_records(row_alert, alert_column, is_forecast=True):
         # Record max historique absolu
         max_value_absolute = df[alert_column].max()
         if pd.notna(row_alert[alert_column]) and row_alert[alert_column] > max_value_absolute:
-            prefix = "Potentiel nouveau" if is_forecast else "Nouveau"
-            suffix = "prévu" if is_forecast else "confirmé"
-            await send_alert(f"🔥 RECORD HISTORIQUE : {prefix} record absolu (max) pour {alert_column} : {row_alert[alert_column]} (précédent: {max_value_absolute}) {suffix} à {time_local.strftime('%H:%M')} ! Données depuis {first_year}.")
+            # Trouver la date de l'ancien record historique absolu
+            max_absolute_idx = df[alert_column].idxmax()
+            previous_absolute_record_time = df.loc[max_absolute_idx, 'time'].tz_convert('Europe/Berlin')
+            previous_absolute_record_date = previous_absolute_record_time.strftime('%d/%m/%Y')
+            
+            record_detected = True
+            record_info = {
+                'value': row_alert[alert_column],
+                'time': row_alert['time'],
+                'confidence': calculate_confidence_score(row_alert['time'], pd.Timestamp.now(tz='UTC')) if is_forecast else 1.0,
+                'notified': False
+            }
+            
+            if is_forecast:
+                # Pour les records historiques absolus, seuil de confiance plus élevé
+                if record_info['confidence'] >= 0.7 and await should_notify_record(record_info, alert_column, 'max'):
+                    prefix = "Potentiel nouveau"
+                    suffix = "prévu"
+                    confidence_text = f" (confiance: {record_info['confidence']*100:.0f}%)" if record_info['confidence'] < 1.0 else ""
+                    await send_alert(f"🔥 RECORD HISTORIQUE : {prefix} record absolu (max) pour {alert_column} : {row_alert[alert_column]} (précédent: {max_value_absolute} le {previous_absolute_record_date}) {suffix} à {time_local.strftime('%H:%M')} ! Données depuis {first_year}{confidence_text}.")
+                    await log_record_alert(alert_column, 'max_absolute', row_alert[alert_column], row_alert['time'])
+            else:
+                # Pour les données historiques, toujours notifier
+                prefix = "Nouveau"
+                suffix = "confirmé"
+                await send_alert(f"🔥 RECORD HISTORIQUE : {prefix} record absolu (max) pour {alert_column} : {row_alert[alert_column]} (précédent: {max_value_absolute} le {previous_absolute_record_date}) {suffix} à {time_local.strftime('%H:%M')} ! Données depuis {first_year}.")
 
         # Record min historique absolu (spécifiquement pour la température)
         if alert_column == 'temperature_2m':
             min_value_absolute = df[alert_column].min()
             if pd.notna(row_alert[alert_column]) and row_alert[alert_column] < min_value_absolute:
-                prefix = "Potentiel nouveau" if is_forecast else "Nouveau"
-                suffix = "prévu" if is_forecast else "confirmé"
-                await send_alert(f"🥶 RECORD HISTORIQUE : {prefix} record absolu (min) pour {alert_column} : {row_alert[alert_column]} (précédent: {min_value_absolute}) {suffix} à {time_local.strftime('%H:%M')} ! Données depuis {first_year}.")
+                # Trouver la date de l'ancien record historique absolu (min)
+                min_absolute_idx = df[alert_column].idxmin()
+                previous_absolute_min_record_time = df.loc[min_absolute_idx, 'time'].tz_convert('Europe/Berlin')
+                previous_absolute_min_record_date = previous_absolute_min_record_time.strftime('%d/%m/%Y')
+                
+                record_detected = True
+                record_info = {
+                    'value': row_alert[alert_column],
+                    'time': row_alert['time'],
+                    'confidence': calculate_confidence_score(row_alert['time'], pd.Timestamp.now(tz='UTC')) if is_forecast else 1.0,
+                    'notified': False
+                }
+                
+                if is_forecast:
+                    # Pour les records historiques absolus, seuil de confiance plus élevé
+                    if record_info['confidence'] >= 0.7 and await should_notify_record(record_info, alert_column, 'min'):
+                        prefix = "Potentiel nouveau"
+                        suffix = "prévu"
+                        confidence_text = f" (confiance: {record_info['confidence']*100:.0f}%)" if record_info['confidence'] < 1.0 else ""
+                        await send_alert(f"🥶 RECORD HISTORIQUE : {prefix} record absolu (min) pour {alert_column} : {row_alert[alert_column]} (précédent: {min_value_absolute} le {previous_absolute_min_record_date}) {suffix} à {time_local.strftime('%H:%M')} ! Données depuis {first_year}{confidence_text}.")
+                        await log_record_alert(alert_column, 'min_absolute', row_alert[alert_column], row_alert['time'])
+                else:
+                    # Pour les données historiques, toujours notifier
+                    prefix = "Nouveau"
+                    suffix = "confirmé"
+                    await send_alert(f"🥶 RECORD HISTORIQUE : {prefix} record absolu (min) pour {alert_column} : {row_alert[alert_column]} (précédent: {min_value_absolute} le {previous_absolute_min_record_date}) {suffix} à {time_local.strftime('%H:%M')} ! Données depuis {first_year}.")
 
     except pd.errors.EmptyDataError:
         await log_message("Fichier CSV vide lors de la vérification des records.")
@@ -941,10 +1385,12 @@ async def start_command(message: types.Message):
             "/heatmap [année|all] - Ex: /heatmap 2024 ou /heatmap all\n"
             "/yearcompare [métrique] - Ex: /yearcompare temperature\n"
             "   Métriques: temperature, rain, wind, pressure\n"
+            "/sunshinecompare - Comparaison ensoleillement multi-années\n"
             "/top10 <métrique> - Ex: /top10 temperature\n"
             "   Métriques: temperature, rain, wind, pressure, uv, humidity\n\n"
             f"💡 **Exemples rapides :**\n"
             f"/graph rain 7 - Pluie des 7 derniers jours\n"
+            f"/sunshinecompare - Évolution ensoleillement\n"
             f"/top10 wind - Vents les plus forts\n"
             f"/daterange 2024-06-01 2024-08-31 - Été 2024\n\n"
             f"N'hésitez pas à explorer ces fonctionnalités pour analyser la météo à {welcome_ville}!"
@@ -1024,7 +1470,8 @@ async def get_latest_info_command(message: types.Message):
 @router.message(Command("forecast"))
 async def get_forecast_command(message: types.Message): # Renommé pour clarté
     try:
-        df_next_seven_hours, _ = await get_weather_data() # Ignorer df_next_twenty_four_hours ici
+        # Utiliser le cache au lieu d'appeler directement l'API
+        df_next_seven_hours, _ = await get_cached_forecast_data()
         if df_next_seven_hours.empty:
             await message.reply("Aucune donnée de prévision disponible pour le moment.")
             return
@@ -1282,8 +1729,8 @@ async def get_top10_command(message: types.Message):
 async def get_forecast_graph_command(message: types.Message):
     """Génère un graphique des prévisions météo pour les prochaines 24h."""
     try:
-        # Récupérer les données de prévision
-        _, df_next_twenty_four_hours = await get_weather_data()
+        # Utiliser le cache au lieu d'appeler directement l'API
+        _, df_next_twenty_four_hours = await get_cached_forecast_data()
         
         if df_next_twenty_four_hours.empty:
             await message.reply("Aucune donnée de prévision disponible pour le moment.")
@@ -1894,6 +2341,198 @@ async def get_heatmap_command(message: types.Message):
     except Exception as e:
         await log_message(f"Erreur dans heatmap_command: {str(e)}\n{traceback.format_exc()}")
         await message.reply("Erreur lors de la génération du calendrier thermique.")
+
+@router.message(Command("sunshinecompare"))
+async def get_sunshine_compare_command(message: types.Message):
+    """Compare l'ensoleillement entre différentes années. Usage: /sunshinecompare"""
+    try:
+        # Lire les données
+        if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
+            await message.reply("Aucune donnée météo disponible.")
+            return
+        
+        df = pd.read_csv(csv_filename)
+        if df.empty:
+            await message.reply("Aucune donnée disponible.")
+            return
+        
+        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
+        df.dropna(subset=['time'], inplace=True)
+        
+        # Vérifier les colonnes nécessaires pour l'ensoleillement
+        required_cols = ['uv_index', 'precipitation', 'relativehumidity_2m']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            await message.reply(f"Données manquantes pour le calcul d'ensoleillement: {', '.join(missing_cols)}")
+            return
+        
+        # Convertir en heure locale et extraire date/heure
+        df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
+        df['year'] = df['local_time'].dt.year
+        df['date'] = df['local_time'].dt.date
+        df['day_of_year'] = df['local_time'].dt.dayofyear
+        
+        # Vérifier qu'on a au moins 2 années de données
+        available_years = sorted(df['year'].unique())
+        if len(available_years) < 2:
+            await message.reply("Pas assez d'années de données pour faire une comparaison (minimum 2 années).")
+            return
+        
+        current_year = pd.Timestamp.now(tz='Europe/Berlin').year
+        current_day_of_year = pd.Timestamp.now(tz='Europe/Berlin').dayofyear
+        
+        # Calculer l'ensoleillement journalier par année
+        daily_sunshine_data = []
+        
+        for year in available_years:
+            await message.reply(f"📊 Calcul en cours pour {year}...")  # Feedback pendant le calcul
+            year_data = df[df['year'] == year].copy()
+            
+            if not year_data.empty:
+                # Grouper par date et calculer l'ensoleillement pour chaque jour
+                for date, day_group in year_data.groupby('date'):
+                    if len(day_group) >= 12:  # Assez de données dans la journée
+                        sunshine_hours = calculate_sunshine_hours(day_group)
+                        day_of_year = pd.to_datetime(date).timetuple().tm_yday
+                        
+                        daily_sunshine_data.append({
+                            'year': year,
+                            'date': date,
+                            'day_of_year': day_of_year,
+                            'sunshine_hours': sunshine_hours
+                        })
+        
+        if not daily_sunshine_data:
+            await message.reply("Pas assez de données pour calculer l'ensoleillement quotidien.")
+            return
+        
+        sunshine_df = pd.DataFrame(daily_sunshine_data)
+        
+        # Créer le graphique moderne
+        fig, ax = plt.subplots(1, 1, figsize=(16, 10))
+        fig.patch.set_facecolor('#f8f9fa')
+        
+        # Palette de couleurs moderne spéciale pour l'ensoleillement
+        sunshine_colors = ['#f39c12', '#e67e22', '#d35400', '#2ecc71', '#27ae60',
+                          '#3498db', '#2980b9', '#9b59b6', '#8e44ad', '#34495e']
+        
+        # Tracer chaque année avec style moderne
+        for i, year in enumerate(available_years):
+            year_data = sunshine_df[sunshine_df['year'] == year]
+            
+            if not year_data.empty:
+                color = sunshine_colors[i % len(sunshine_colors)]
+                
+                # Style spécial pour l'année courante
+                if year == current_year:
+                    ax.plot(year_data['day_of_year'], year_data['sunshine_hours'],
+                           color=color, linewidth=4, label=f'☀️ {year} (actuelle)',
+                           alpha=0.95, zorder=5, marker='o', markersize=3,
+                           markevery=30)
+                else:
+                    ax.plot(year_data['day_of_year'], year_data['sunshine_hours'],
+                           color=color, linewidth=2.5, label=f'🌤️ {year}',
+                           alpha=0.8, zorder=3)
+        
+        # Ligne verticale moderne pour "aujourd'hui"
+        ax.axvline(x=current_day_of_year, color='#f39c12', linestyle='--',
+                  linewidth=3, alpha=0.9, zorder=10,
+                  label=f"📍 Aujourd'hui (jour {current_day_of_year})")
+        
+        # Zone d'intérêt moderne avec gradient doré pour l'ensoleillement
+        highlight_start = max(1, current_day_of_year - 15)
+        highlight_end = min(366, current_day_of_year + 15)
+        ax.axvspan(highlight_start, highlight_end, alpha=0.15, color='#f39c12',
+                  label='☀️ Période actuelle ±15j', zorder=1)
+        
+        # Titre moderne avec emojis
+        ax.set_title(f'☀️ Comparaison annuelle - Ensoleillement quotidien à {VILLE}\n'
+                    f'📊 Analyse de {len(available_years)} années de données',
+                    fontsize=18, fontweight='bold', color='#2c3e50', pad=25)
+        
+        # Labels modernes avec emojis
+        ax.set_xlabel('📅 Jour de l\'année', fontsize=14, color='#2c3e50', fontweight='bold')
+        ax.set_ylabel('☀️ Heures d\'ensoleillement', fontsize=14, color='#2c3e50', fontweight='bold')
+        
+        # Style moderne des axes
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('#bdc3c7')
+        ax.spines['bottom'].set_color('#bdc3c7')
+        ax.tick_params(colors='#34495e', labelsize=11)
+        
+        # Légende moderne
+        legend = ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left',
+                          frameon=True, shadow=True, fancybox=True,
+                          framealpha=0.95, edgecolor='#bdc3c7')
+        legend.get_frame().set_facecolor('#ffffff')
+        
+        # Marques des mois sur l'axe X
+        month_starts = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+        month_names = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun',
+                      'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
+        ax.set_xticks(month_starts)
+        ax.set_xticklabels(month_names)
+        
+        # Zones saisonnières colorées en arrière-plan
+        ax.axvspan(1, 80, alpha=0.1, color='#74b9ff', label='❄️ Hiver')     # Hiver
+        ax.axvspan(80, 172, alpha=0.1, color='#55a3ff', label='🌸 Printemps')  # Printemps
+        ax.axvspan(172, 266, alpha=0.1, color='#fdcb6e', label='☀️ Été')     # Été
+        ax.axvspan(266, 355, alpha=0.1, color='#e17055', label='🍂 Automne')  # Automne
+        ax.axvspan(355, 366, alpha=0.1, color='#74b9ff')                    # Fin hiver
+        
+        plt.tight_layout()
+        
+        # Statistiques pour la période actuelle
+        current_period_data = sunshine_df[
+            (sunshine_df['day_of_year'] >= highlight_start) &
+            (sunshine_df['day_of_year'] <= highlight_end)
+        ]
+        
+        stats_by_year = {}
+        annual_totals = {}
+        
+        for year in available_years:
+            year_period = current_period_data[current_period_data['year'] == year]
+            year_all = sunshine_df[sunshine_df['year'] == year]
+            
+            if not year_period.empty:
+                stats_by_year[year] = year_period['sunshine_hours'].mean()
+            
+            if not year_all.empty:
+                annual_totals[year] = year_all['sunshine_hours'].sum()
+        
+        # Préparer le texte des statistiques
+        stats_text = f"☀️ Moyennes quotidiennes période actuelle (±15j):\n"
+        for year, avg_val in sorted(stats_by_year.items()):
+            marker = " 👈" if year == current_year else ""
+            stats_text += f"{year}: {avg_val:.1f}h{marker}\n"
+        
+        stats_text += f"\n📊 Totaux annuels estimés:\n"
+        for year, total_val in sorted(annual_totals.items()):
+            marker = " 👈" if year == current_year else ""
+            stats_text += f"{year}: {total_val:.0f}h{marker}\n"
+        
+        # Tendance générale
+        if len(annual_totals) >= 3:
+            years_list = list(annual_totals.keys())
+            values_list = list(annual_totals.values())
+            
+            # Régression linéaire simple
+            if len(values_list) > 1:
+                slope = (values_list[-1] - values_list[0]) / (years_list[-1] - years_list[0])
+                trend = "☀️ plus ensoleillé" if slope > 0 else "☁️ moins ensoleillé" if slope < 0 else "➡️ stable"
+                stats_text += f"\n📈 Tendance générale: {trend} ({slope:.0f}h/an)"
+        
+        caption = (f"☀️ Comparaison ensoleillement - {len(available_years)} années\n"
+                  f"📅 Années: {min(available_years)}-{max(available_years)}\n"
+                  f"{stats_text}")
+        
+        await send_graph(message.chat.id, fig, caption)
+        
+    except Exception as e:
+        await log_message(f"Erreur dans sunshinecompare_command: {str(e)}\n{traceback.format_exc()}")
+        await message.reply("Erreur lors de la génération de la comparaison d'ensoleillement.")
 
 @router.message(Command("yearcompare"))
 async def get_year_compare_command(message: types.Message):

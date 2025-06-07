@@ -28,7 +28,7 @@ MeteoCheck est un bot Telegram météorologique complet qui surveille et analyse
 
 #### 📈 Visualisations graphiques avancées
 * **Graphiques temporels :**
-  * `/graph <métrique> [jours]` - Graphiques détaillés avec moyennes mobiles
+  * `/graph <métrique> [jours]` - **2 graphiques** (courbe + barres) avec moyennes mobiles
     * Métriques : `temperature`, `rain`, `wind`, `pressure`, `uv`, `humidity`
     * Exemple : `/graph temperature 30` (30 derniers jours)
   * `/forecastgraph` - Graphique des prévisions 24h avec codes couleur météo style MeteoSuisse
@@ -38,14 +38,14 @@ MeteoCheck est un bot Telegram météorologique complet qui surveille et analyse
     * `/heatmap 2024` - Année spécifique
     * `/heatmap all` - Vue multi-années
   * `/yearcompare [métrique]` - Comparaison inter-annuelle avec tendances
-  * `/sunshinecompare` - Liste texte ensoleillement mensuel
+  * `/sunshinelist` - Liste texte ensoleillement mensuel
   * `/top10 <métrique>` - Classement des valeurs extrêmes
 
 #### 🎯 Exemples d'utilisation
-* `/graph rain 7`          # Précipitations des 7 derniers jours
+* `/graph rain 7`          # 2 graphiques précipitations 7 derniers jours
 * `/heatmap all`           # Calendrier thermique toutes années
 * `/yearcompare wind`      # Comparaison des vents par année
-* `/sunshinecompare`       # Liste texte ensoleillement mensuel
+* `/sunshinelist`          # Liste texte ensoleillement mensuel
 * `/top10 temperature`     # Records de température
 * `/daterange 2024-06-01 2024-08-31`  # Analyse été 2024
 

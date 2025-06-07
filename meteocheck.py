@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Rymentz
-* VERSIONS : v1.9.5
+* VERSIONS : v2.0.0
 * NOTES : None
 *
 '''
@@ -37,12 +37,165 @@ sns.set_palette("husl")
 import warnings
 import matplotlib.font_manager as fm
 
-# Désactiver les warnings spécifiques aux glyphes manquants
-warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+# Désactiver les warnings spécifiques aux glyphes manquants de manière plus robuste
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib.font_manager')
+warnings.filterwarnings('ignore', category=UserWarning, message='.*Glyph.*missing.*')
+warnings.filterwarnings('ignore', category=UserWarning, message='.*\\\\N.*missing.*')
+
+# Function pour remplacer les emojis par des alternatives textuelles pour matplotlib
+def replace_emojis_for_matplotlib(text):
+    """Remplace les emojis par des alternatives textuelles pour éviter les warnings matplotlib."""
+    emoji_replacements = {
+        # Emojis météo de base
+        '📅': '[Cal]',
+        '🌧️': '[Rain]',
+        '📊': '[Chart]',
+        '🟣': '[Dot]',
+        '☀️': '[Sun]',
+        '❄️': '[Snow]',
+        '🔥': '[Fire]',
+        '🌡️': '[Temp]',
+        '💨': '[Wind]',
+        '🎈': '[Press]',
+        '💦': '[Humid]',
+        '🌦️': '[Weather]',
+        '🏆': '[Trophy]',
+        '🔮': '[Crystal]',
+        '📈': '[Up]',
+        '📉': '[Down]',
+        '📍': '[Pin]',
+        '🌤️': '[PartCloud]',
+        '🌸': '[Spring]',
+        '🍂': '[Autumn]',
+        '🏖️': '[Weekend]',
+        '🌅': '[Day]',
+        '💧': '[Drop]',
+        '🏜️': '[Dry]',
+        '🔴': '[Red]',
+        '🟦': '[Blue]',
+        '💙': '[LBlue]',
+        '⚠️': '[Warning]',
+        '💀': '[Danger]',
+        '🌪️': '[Storm]',
+        '🥵': '[Hot]',
+        '🥶': '[Cold]',
+        '🌬️': '[WindStrong]',
+        '🍃': '[WindLight]',
+        '🌊': '[Wave]',
+        
+        # Emojis d'alerte et time
+        '🚨': '[Alert]',
+        '⏰': '[Clock]',
+        '⏱️': '[Timer]',
+        '🤖': '[Bot]',
+        '🔧': '[Tool]',
+        '🎯': '[Target]',
+        '🌂': '[Umbrella]',
+        '🌈': '[Rainbow]',
+        
+        # Formes et couleurs
+        '🔵': '[BlueDot]',
+        '🟨': '[Yellow]',
+        '🟩': '[Green]',
+        '🟪': '[Purple2]',
+        '⚫': '[Black]',
+        '⚪': '[White]',
+        '🔶': '[OrangeDiam]',
+        '🔷': '[BlueDiam]',
+        '🔸': '[SmallOrangeDiam]',
+        '🔹': '[SmallBlueDiam]',
+        '🔺': '[RedTriUp]',
+        '🔻': '[RedTriDown]',
+        '💎': '[Diamond]',
+        '🔱': '[Trident]',
+        '⭕': '[Circle]',
+        '❌': '[X]',
+        '❓': '[Question]',
+        '❗': '[Exclamation]',
+        '💯': '[100]',
+        
+        # Contrôles et tech
+        '🆔': '[ID]',
+        '🆘': '[SOS]',
+        '🅰️': '[A]',
+        '🅱️': '[B]',
+        '🆎': '[AB]',
+        '🅾️': '[O]',
+        '🔀': '[Shuffle]',
+        '🔁': '[Repeat]',
+        '🔂': '[RepeatOne]',
+        '⏭️': '[NextTrack]',
+        '⏯️': '[PlayPause]',
+        '⏹️': '[Stop]',
+        '⏺️': '[Record]',
+        '🎦': '[Cinema]',
+        '🔅': '[DimBright]',
+        '🔆': '[BrightUp]',
+        '📶': '[Signal]',
+        '📳': '[Vibrate]',
+        '📴': '[PhoneOff]',
+        
+        # Symboles divers
+        '♀️': '[Female]',
+        '♂️': '[Male]',
+        '⚕️': '[Medical]',
+        '♻️': '[Recycle]',
+        '⚜️': '[FleurDeLis]',
+        '🔰': '[Beginner]',
+        '📛': '[NameBadge]',
+        '❇️': '[Sparkle]',
+        '✳️': '[EightSpoke]',
+        '❎': '[CrossMark]',
+        '🌀': '[Cyclone]',
+        '💤': '[Sleep]',
+        '♨️': '[HotSprings]',
+        '💫': '[Dizzy]',
+        '🌟': '[GlowStar]',
+        '⭐': '[Star]',
+        '🌙': '[CrescentMoon]',
+        '☄️': '[Comet]',
+        '🌍': '[EarthAfrica]',
+        '🌎': '[EarthAmericas]',
+        '🌏': '[EarthAsia]',
+        '🌋': '[Volcano]',
+        '🗻': '[MountFuji]',
+        '🏔️': '[SnowMountain]',
+        '🌄': '[SunriseMountain]',
+        '🌆': '[Cityscape]',
+        '🌇': '[Sunset]',
+        '🌉': '[BridgeNight]',
+        '🌌': '[MilkyWay]',
+        '🎆': '[Fireworks]',
+        '🎇': '[Sparkler]',
+        '🌃': '[NightStars]',
+        '🏙️': '[Cityscape2]',
+        '🌠': '[ShootingStar]',
+        
+        # Emojis de direction
+        '↗️': '[UpRight]',
+        '↘️': '[DownRight]',
+        '➡️': '[Right]',
+        
+        # Emojis de nature/saisons
+        '☁️': '[Cloud]',
+        '🌥': '[CloudSun]',
+        '⛅': '[PartlyCloudy]',
+        
+        # Coeurs et sentiments
+        '💛': '[YellowHeart]',
+        '💜': '[PurpleHeart]',
+        '💚': '[GreenHeart]',
+        '❤️': '[RedHeart]'
+    }
+    
+    result = str(text)
+    for emoji, replacement in emoji_replacements.items():
+        result = result.replace(emoji, replacement)
+    return result
 
 # Trouver une police système qui supporte mieux les caractères Unicode
 available_fonts = [f.name for f in fm.fontManager.ttflist]
-emoji_compatible_fonts = ['Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', 'DejaVu Sans', 'Liberation Sans']
+emoji_compatible_fonts = ['Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', 'Arial Unicode MS', 'DejaVu Sans', 'Liberation Sans']
 selected_font = 'sans-serif'  # Fallback par défaut
 
 for font in emoji_compatible_fonts:
@@ -67,7 +220,8 @@ plt.rcParams.update({
     'ytick.labelsize': 9,
     'legend.fontsize': 10,
     'figure.titlesize': 16,
-    'axes.unicode_minus': False  # Éviter les problèmes avec les caractères Unicode
+    'axes.unicode_minus': False,  # Éviter les problèmes avec les caractères Unicode
+    'text.usetex': False  # Désactiver LaTeX qui peut causer des problèmes avec Unicode
 })
 
 # Imports spécifiques à aiogram 3.x
@@ -1510,7 +1664,54 @@ def parse_date_input(date_str):
 async def create_graph_image(fig):
     """Convertit une figure matplotlib en BytesIO pour Telegram."""
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    
+    # Remplacer les emojis dans tous les textes du graphique avant de sauvegarder
+    try:
+        for ax in fig.get_axes():
+            # Titre principal
+            if ax.get_title():
+                ax.set_title(replace_emojis_for_matplotlib(ax.get_title()))
+            
+            # Labels des axes
+            if ax.get_xlabel():
+                ax.set_xlabel(replace_emojis_for_matplotlib(ax.get_xlabel()))
+            if ax.get_ylabel():
+                ax.set_ylabel(replace_emojis_for_matplotlib(ax.get_ylabel()))
+            
+            # Légende
+            legend = ax.get_legend()
+            if legend:
+                for text in legend.get_texts():
+                    text.set_text(replace_emojis_for_matplotlib(text.get_text()))
+            
+            # Annotations et textes
+            for text in ax.texts:
+                text.set_text(replace_emojis_for_matplotlib(text.get_text()))
+            
+            # Labels des ticks si ils contiennent des emojis
+            for label in ax.get_xticklabels():
+                label.set_text(replace_emojis_for_matplotlib(label.get_text()))
+            for label in ax.get_yticklabels():
+                label.set_text(replace_emojis_for_matplotlib(label.get_text()))
+        
+        # Titre général de la figure
+        if hasattr(fig, '_suptitle') and fig._suptitle:
+            fig.suptitle(replace_emojis_for_matplotlib(fig._suptitle.get_text()))
+    except Exception as e:
+        await log_message(f"Erreur lors du remplacement des emojis dans le graphique: {str(e)}")
+    
+    # Sauvegarder avec gestion d'erreur améliorée
+    try:
+        fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    except Exception as e:
+        await log_message(f"Erreur lors de la sauvegarde du graphique: {str(e)}")
+        # Fallback: essayer une sauvegarde simple sans bbox_inches
+        try:
+            fig.savefig(buf, format='png', dpi=100)
+        except Exception as e2:
+            await log_message(f"Erreur fallback sauvegarde graphique: {str(e2)}")
+            raise e2
+    
     buf.seek(0)
     plt.close(fig)
     return buf
@@ -1573,98 +1774,125 @@ async def start_command(message: types.Message):
         welcome_message = (
             f"Bienvenue sur le bot météo de {welcome_ville}! 🌤️\n\n"
             "📊 **Commandes de base :**\n"
-            "/weather - Dernières données météo enregistrées\n"
-            "/forecast - Prévisions pour les prochaines heures\n"
-            "/sunshine - Graphique barres ensoleillement par mois/année\n\n"
+            "/weather - Météo actuelle (prévisions du cache)\n"
+            "/forecast - Prévisions détaillées des prochaines heures\n"
+            "/sunshine - Graphique ensoleillement mensuel par année\n\n"
             "📅 **Résumés par période :**\n"
             "/month - Résumé du mois dernier\n"
             "/year - Résumé de l'année en cours\n"
-            "/all - Résumé de toutes les données\n"
-            "/daterange YYYY-MM-DD YYYY-MM-DD - Ex: /daterange 2024-01-01 2024-12-31\n\n"
+            "/all - Résumé de toutes les données historiques\n"
+            "/daterange YYYY-MM-DD YYYY-MM-DD - Résumé période personnalisée\n\n"
             "📈 **Graphiques et analyses :**\n"
-            "/forecastgraph - Graphique des prévisions 24h\n"
-            "/graph <métrique> [jours] - Ex: /graph temperature 30\n"
+            "/forecastgraph - Graphique prévisions 24h (température + précipitations)\n"
+            "/graph <métrique> [jours] - 2 graphiques: courbe + barres\n"
             "   Métriques: temperature, rain, wind, pressure, uv, humidity\n"
-            "/heatmap [année|all] - Ex: /heatmap 2024 ou /heatmap all\n"
-            "/yearcompare [métrique] - Ex: /yearcompare temperature\n"
-            "   Métriques: temperature, rain, wind, pressure, uv, humidity\n"
-            "/sunshinelist - Liste texte ensoleillement mensuel\n"
-            "/top10 <métrique> - Ex: /top10 temperature\n"
-            "   Métriques: temperature, rain, wind, pressure, uv, humidity\n\n"
-            f"💡 **Exemples rapides :**\n"
-            f"/graph rain 7 - Pluie des 7 derniers jours\n"
-            f"/sunshinelist - Évolution ensoleillement\n"
-            f"/top10 wind - Vents les plus forts\n"
-            f"/daterange 2024-06-01 2024-08-31 - Été 2024\n\n"
-            f"N'hésitez pas à explorer ces fonctionnalités pour analyser la météo à {welcome_ville}!"
+            "/heatmap [année|all] - Calendrier thermique (style GitHub)\n"
+            "/yearcompare [métrique] - Comparaison entre années\n"
+            "/sunshinelist - Liste mensuelle d'ensoleillement estimé\n"
+            "/top10 <métrique> - Classement des valeurs extrêmes\n\n"
+            f"💡 **Exemples pratiques :**\n"
+            f"/weather - Météo actuelle avec heure de mise à jour\n"
+            f"/graph rain 7 - Pluie: courbe + barres des 7 derniers jours\n"
+            f"/heatmap all - Calendrier multi-années des températures\n"
+            f"/yearcompare temperature - Comparer les années\n"
+            f"/daterange 2024-06-01 2024-08-31 - Analyse été 2024\n\n"
+            f"🎯 **Info importante :** Les graphiques affichent `[Temp]`, `[Rain]` etc. au lieu d'emojis pour éviter les erreurs d'affichage.\n\n"
+            f"Explorez la météo de {welcome_ville} avec ces outils d'analyse avancés!"
         )
         await message.reply(welcome_message)
     else:
         welcome_back_message = (
-            "Vous avez déjà lancé le bot ! 🌤️\n\n"
-            "📋 **Rappel des commandes principales :**\n"
-            "• /weather - Météo actuelle\n"
-            "• /forecast - Prévisions\n"
-            "• /graph temp 7 - Graphique température 7 jours\n"
-            "• /heatmap 2024 - Calendrier thermique 2024\n"
-            "• /top10 rain - Top 10 précipitations\n"
-            "• /daterange 2024-01-01 2024-12-31 - Résumé période\n\n"
-            "💡 **Métriques disponibles :**\n"
-            "temperature, rain, wind, pressure, uv, humidity\n\n"
-            "Quelle information météo souhaitez-vous obtenir aujourd'hui?"
+            "Bon retour ! 🌤️ Votre bot météo est prêt.\n\n"
+            "⚡ **Commandes rapides :**\n"
+            "• /weather - Météo actuelle (avec heure de mise à jour)\n"
+            "• /forecast - Prévisions détaillées\n"
+            "• /graph temp 7 - Courbe + barres température 7j\n"
+            "• /heatmap all - Calendrier thermique multi-années\n"
+            "• /yearcompare rain - Comparer les précipitations\n"
+            "• /forecastgraph - Graphique prévisions 24h\n\n"
+            "🎯 **Rappel :** Les graphiques utilisent `[Temp]`, `[Rain]` etc. pour éviter les erreurs d'affichage.\n\n"
+            "💡 **Métriques :** temperature, rain, wind, pressure, uv, humidity\n\n"
+            "Que souhaitez-vous analyser aujourd'hui ?"
         )
         await message.reply(welcome_back_message)
 
 @router.message(Command("weather"))
 async def get_latest_info_command(message: types.Message):
     try:
-        await log_message("Début de get_latest_info_command")
+        await log_message("Début de get_latest_info_command (utilisant le cache)")
         
-        if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
-            await log_message("Fichier CSV inexistant ou vide pour /weather.")
-            await message.reply("Aucune donnée météo disponible pour le moment.")
-            return
-
-        df = pd.read_csv(csv_filename)
-        await log_message("CSV lu avec succès pour /weather")
+        # Utiliser le cache des prévisions pour obtenir les données actuelles
+        df_seven, df_twenty_four = await get_cached_forecast_data()
         
-        if df.empty:
-            await log_message("Le DataFrame est vide pour /weather")
-            await message.reply("Aucune donnée disponible.")
+        # Obtenir l'heure de la dernière mise à jour du cache
+        cache_update_time = cached_forecast_data['last_update']
+        if cache_update_time:
+            cache_update_display = cache_update_time.tz_convert('Europe/Berlin').strftime("%H:%M:%S")
         else:
-            # S'assurer que la colonne 'time' est bien en datetime pour le tri avant de prendre la dernière
+            cache_update_display = "Inconnue"
+        
+        # Prendre la première entrée (la plus proche dans le temps) du cache 7h
+        if not df_seven.empty:
+            # Données de prévision (les plus récentes disponibles)
+            latest_info = df_seven.iloc[0].to_dict()
+            time_display = latest_info['time'].tz_convert('Europe/Berlin').strftime("%Y-%m-%d %H:%M:%S")
+            data_source = "prévisions actuelles (cache)"
+            
+            response_parts = [f"🌡️ Météo actuelle à {VILLE} :\n"]
+            response_parts.append(f"📅 {time_display} (prévision)")
+            response_parts.append(f"🔄 Dernière maj données: {cache_update_display}\n")
+            
+        elif not df_twenty_four.empty:
+            # Fallback vers cache 24h si cache 7h vide
+            latest_info = df_twenty_four.iloc[0].to_dict()
+            time_display = latest_info['time'].tz_convert('Europe/Berlin').strftime("%Y-%m-%d %H:%M:%S")
+            data_source = "prévisions (cache 24h)"
+            
+            response_parts = [f"🌡️ Météo actuelle à {VILLE} :\n"]
+            response_parts.append(f"📅 {time_display} (prévision)")
+            response_parts.append(f"🔄 Dernière maj données: {cache_update_display}\n")
+            
+        else:
+            # Fallback vers CSV si le cache est vide
+            await log_message("Cache vide, fallback vers CSV pour /weather")
+            
+            if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
+                await message.reply("Aucune donnée météo disponible pour le moment.")
+                return
+
+            df = pd.read_csv(csv_filename)
+            if df.empty:
+                await message.reply("Aucune donnée disponible.")
+                return
+                
             df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
             df.dropna(subset=['time'], inplace=True)
             df.sort_values(by='time', inplace=True)
 
-            if df.empty: # Peut devenir vide après dropna
-                 await message.reply("Aucune donnée valide disponible après nettoyage.")
-                 return
+            if df.empty:
+                await message.reply("Aucune donnée valide disponible.")
+                return
 
             latest_info = df.iloc[-1].to_dict()
-            # La date est déjà en UTC, la convertir pour affichage
             time_display = pd.to_datetime(latest_info['time'], utc=True).tz_convert('Europe/Berlin').strftime("%Y-%m-%d %H:%M:%S")
+            data_source = "dernières données enregistrées (CSV)"
             
             response_parts = [f"🌡️ Météo la plus récente enregistrée à {VILLE} :\n"]
             response_parts.append(f"📅 {time_display}\n")
-            response_parts.append(f"🌡️ Température: {latest_info.get('temperature_2m', 'N/A')}°C")
-            response_parts.append(f"🌧️ Probabilité de pluie: {latest_info.get('precipitation_probability', 'N/A')}%")
-            response_parts.append(f"💧 Précipitations: {latest_info.get('precipitation', 'N/A')}mm")
-            response_parts.append(f"💨 Vent: {latest_info.get('windspeed_10m', 'N/A')}km/h")
-            response_parts.append(f"☀️ Indice UV: {latest_info.get('uv_index', 'N/A')}")
-            response_parts.append(f"🎈 Pression: {latest_info.get('pressure_msl', 'N/A')} hPa") # Changé emoji
-            response_parts.append(f"💦 Humidité: {latest_info.get('relativehumidity_2m', 'N/A')}%")
-            
-            await log_message("Réponse /weather préparée, tentative d'envoi")
-            await message.reply("\n".join(response_parts))
-            await log_message("Réponse /weather envoyée avec succès")
 
-    except pd.errors.EmptyDataError:
-        await log_message("Fichier CSV vide pour /weather (EmptyDataError).")
-        await message.reply("Aucune donnée météo disponible (fichier vide).")
-    except FileNotFoundError:
-        await log_message(f"Fichier {csv_filename} non trouvé pour /weather.")
-        await message.reply("Source de données météo non trouvée.")
+        # Construction de la réponse (commune à tous les cas)
+        response_parts.append(f"🌡️ Température: {latest_info.get('temperature_2m', 'N/A')}°C")
+        response_parts.append(f"🌧️ Probabilité de pluie: {latest_info.get('precipitation_probability', 'N/A')}%")
+        response_parts.append(f"💧 Précipitations: {latest_info.get('precipitation', 'N/A')}mm")
+        response_parts.append(f"💨 Vent: {latest_info.get('windspeed_10m', 'N/A')}km/h")
+        response_parts.append(f"☀️ Indice UV: {latest_info.get('uv_index', 'N/A')}")
+        response_parts.append(f"🎈 Pression: {latest_info.get('pressure_msl', 'N/A')} hPa")
+        response_parts.append(f"💦 Humidité: {latest_info.get('relativehumidity_2m', 'N/A')}%")
+        
+        await log_message(f"Réponse /weather préparée depuis {data_source}, tentative d'envoi")
+        await message.reply("\n".join(response_parts))
+        await log_message("Réponse /weather envoyée avec succès")
+
     except Exception as e:
         await log_message(f"Error in get_latest_info_command: {str(e)}\n{traceback.format_exc()}")
         await message.reply(f"Erreur lors de l'obtention des informations : {str(e)}")
@@ -2887,7 +3115,7 @@ async def get_year_compare_command(message: types.Message):
             await message.reply(f"Données pour {metric_info['name']} non disponibles.")
             return
         
-        # Convertir en heure locale et extraire date/heure
+        # Convertir en heure locale et extraire date/heure AVANT le filtrage
         df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
         df['year'] = df['local_time'].dt.year
         df['month'] = df['local_time'].dt.month
@@ -2899,11 +3127,22 @@ async def get_year_compare_command(message: types.Message):
         df = df_complete.copy()
         await log_message("Filtrage automatique des mois incomplets pour /yearcompare")
         
-        # Vérifier qu'on a au moins 2 années de données
+        # Recréer les colonnes temporelles car filter_complete_months_only les supprime
+        df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
+        df['year'] = df['local_time'].dt.year
+        df['month'] = df['local_time'].dt.month
+        df['month_day'] = df['local_time'].dt.strftime('%m-%d')
+        df['day_of_year'] = df['local_time'].dt.dayofyear
+        
+        # Vérifier qu'on a au moins une année de données
         available_years = sorted(df['year'].unique())
-        if len(available_years) < 2:
-            await message.reply("Pas assez d'années de données pour faire une comparaison (minimum 2 années).")
+        if len(available_years) < 1:
+            await message.reply("Aucune année de données complète disponible.")
             return
+        
+        # Adapter le message selon le nombre d'années
+        if len(available_years) == 1:
+            await log_message(f"Affichage d'une seule année ({available_years[0]}) pour /yearcompare")
         
         current_year = pd.Timestamp.now(tz='Europe/Berlin').year
         current_day_of_year = pd.Timestamp.now(tz='Europe/Berlin').dayofyear

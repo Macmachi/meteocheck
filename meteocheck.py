@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Rymentz
-* VERSIONS : v1.9.2
+* VERSIONS : v1.9.3
 * NOTES : None
 *
 '''
@@ -1407,7 +1407,7 @@ async def start_command(message: types.Message):
             "   Métriques: temperature, rain, wind, pressure, uv, humidity\n"
             "/heatmap [année|all] - Ex: /heatmap 2024 ou /heatmap all\n"
             "/yearcompare [métrique] - Ex: /yearcompare temperature\n"
-            "   Métriques: temperature, rain, wind, pressure\n"
+            "   Métriques: temperature, rain, wind, pressure, uv, humidity\n"
             "/sunshinelist - Liste texte ensoleillement mensuel\n"
             "/top10 <métrique> - Ex: /top10 temperature\n"
             "   Métriques: temperature, rain, wind, pressure, uv, humidity\n\n"
@@ -2661,13 +2661,15 @@ async def get_year_compare_command(message: types.Message):
             'rain': 'precipitation',
             'precipitation': 'precipitation',
             'wind': 'windspeed_10m',
-            'pressure': 'pressure_msl'
+            'pressure': 'pressure_msl',
+            'uv': 'uv_index',
+            'humidity': 'relativehumidity_2m'
         }
         
         if metric_arg not in metric_mapping:
             await message.reply(
                 f"Métrique '{metric_arg}' non reconnue.\n"
-                f"Utilisez: temperature, rain, wind, pressure\n"
+                f"Utilisez: temperature, rain, wind, pressure, uv, humidity\n"
                 f"Exemple: /yearcompare temperature"
             )
             return
@@ -2695,8 +2697,13 @@ async def get_year_compare_command(message: types.Message):
         # Convertir en heure locale et extraire date/heure
         df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
         df['year'] = df['local_time'].dt.year
+        df['month'] = df['local_time'].dt.month
         df['month_day'] = df['local_time'].dt.strftime('%m-%d')
         df['day_of_year'] = df['local_time'].dt.dayofyear
+        
+        # EXCLUSION d'août 2023 (données incomplètes - début des mesures)
+        df = df[~((df['year'] == 2023) & (df['month'] == 8))].copy()
+        await log_message("Exclusion d'août 2023 (données incomplètes) pour /yearcompare")
         
         # Vérifier qu'on a au moins 2 années de données
         available_years = sorted(df['year'].unique())
@@ -2710,9 +2717,9 @@ async def get_year_compare_command(message: types.Message):
         # Calculer moyennes journalières par année
         daily_means = df.groupby(['year', 'day_of_year'])[column_name].mean().reset_index()
         
-        # Créer le graphique moderne
-        fig, ax = plt.subplots(1, 1, figsize=(16, 10))
-        fig.patch.set_facecolor('#f8f9fa')
+        # === GRAPHIQUE 1: COURBE DE COMPARAISON ANNUELLE ===
+        fig1, ax1 = plt.subplots(1, 1, figsize=(16, 10))
+        fig1.patch.set_facecolor('#f8f9fa')
         
         # Palette de couleurs moderne et distincte
         modern_colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
@@ -2727,61 +2734,61 @@ async def get_year_compare_command(message: types.Message):
                 
                 # Style spécial pour l'année courante
                 if year == current_year:
-                    ax.plot(year_data['day_of_year'], year_data[column_name],
+                    ax1.plot(year_data['day_of_year'], year_data[column_name],
                            color=color, linewidth=4, label=f'📍 {year} (actuelle)',
                            alpha=0.95, zorder=5, marker='o', markersize=3,
                            markevery=30)
                 else:
-                    ax.plot(year_data['day_of_year'], year_data[column_name],
+                    ax1.plot(year_data['day_of_year'], year_data[column_name],
                            color=color, linewidth=2.5, label=f'📅 {year}',
                            alpha=0.8, zorder=3)
         
         # Ligne verticale moderne pour "aujourd'hui"
-        ax.axvline(x=current_day_of_year, color='#e74c3c', linestyle='--',
+        ax1.axvline(x=current_day_of_year, color='#e74c3c', linestyle='--',
                   linewidth=3, alpha=0.9, zorder=10,
                   label=f"📍 Aujourd'hui (jour {current_day_of_year})")
         
         # Zone d'intérêt moderne avec gradient
         highlight_start = max(1, current_day_of_year - 15)
         highlight_end = min(366, current_day_of_year + 15)
-        ax.axvspan(highlight_start, highlight_end, alpha=0.15, color='#e74c3c',
+        ax1.axvspan(highlight_start, highlight_end, alpha=0.15, color='#e74c3c',
                   label='🔍 Période actuelle ±15j', zorder=1)
         
         # Titre moderne avec emojis
-        ax.set_title(f'{metric_info["emoji"]} Comparaison annuelle - {metric_info["name"]} à {VILLE}\n'
-                    f'📊 Analyse de {len(available_years)} années de données',
+        ax1.set_title(f'{metric_info["emoji"]} Comparaison annuelle (courbe) - {metric_info["name"]} à {VILLE}\n'
+                    f'📊 Analyse de {len(available_years)} années de données (excl. août 2023)',
                     fontsize=18, fontweight='bold', color='#2c3e50', pad=25)
         
         # Labels modernes avec emojis
-        ax.set_xlabel('📅 Jour de l\'année', fontsize=14, color='#2c3e50', fontweight='bold')
-        ax.set_ylabel(f'{metric_info["emoji"]} {metric_info["name"]} ({metric_info["unit"]})',
+        ax1.set_xlabel('📅 Jour de l\'année', fontsize=14, color='#2c3e50', fontweight='bold')
+        ax1.set_ylabel(f'{metric_info["emoji"]} {metric_info["name"]} ({metric_info["unit"]})',
                      fontsize=14, color='#2c3e50', fontweight='bold')
         
         # Style moderne des axes
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_color('#bdc3c7')
-        ax.spines['bottom'].set_color('#bdc3c7')
-        ax.tick_params(colors='#34495e', labelsize=11)
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
+        ax1.spines['left'].set_color('#bdc3c7')
+        ax1.spines['bottom'].set_color('#bdc3c7')
+        ax1.tick_params(colors='#34495e', labelsize=11)
         
         # Légende moderne
-        legend = ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left',
+        legend = ax1.legend(bbox_to_anchor=(1.02, 1), loc='upper left',
                           frameon=True, shadow=True, fancybox=True,
                           framealpha=0.95, edgecolor='#bdc3c7')
         legend.get_frame().set_facecolor('#ffffff')
         
         # Marques des mois sur l'axe X
         month_starts = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
-        month_names = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 
+        month_names = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun',
                       'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
-        ax.set_xticks(month_starts)
-        ax.set_xticklabels(month_names)
+        ax1.set_xticks(month_starts)
+        ax1.set_xticklabels(month_names)
         
         plt.tight_layout()
         
         # Statistiques pour la période actuelle
         current_period_data = daily_means[
-            (daily_means['day_of_year'] >= highlight_start) & 
+            (daily_means['day_of_year'] >= highlight_start) &
             (daily_means['day_of_year'] <= highlight_end)
         ]
         
@@ -2808,11 +2815,112 @@ async def get_year_compare_command(message: types.Message):
                 trend = "↗️ hausse" if slope > 0 else "↘️ baisse" if slope < 0 else "➡️ stable"
                 stats_text += f"\n📈 Tendance générale: {trend} ({slope:.2f}{metric_info['unit']}/an)"
         
-        caption = (f"{metric_info['emoji']} Comparaison {metric_info['name']} - {len(available_years)} années\n"
-                  f"📅 Années: {min(available_years)}-{max(available_years)}\n"
-                  f"{stats_text}")
+        base_caption = (f"{metric_info['emoji']} Comparaison {metric_info['name']} - {len(available_years)} années\n"
+                       f"📅 Années: {min(available_years)}-{max(available_years)} (excl. août 2023)\n"
+                       f"{stats_text}")
         
-        await send_graph(message.chat.id, fig, caption)
+        # Envoyer le premier graphique (courbe)
+        caption1 = f"📊 Comparaison annuelle (courbe)\n{base_caption}"
+        await send_graph(message.chat.id, fig1, caption1)
+        
+        # === GRAPHIQUE 2: BARRES MENSUELLES PAR ANNÉE ===
+        fig2, ax2 = plt.subplots(1, 1, figsize=(16, 10))
+        fig2.patch.set_facecolor('#f8f9fa')
+        
+        # Calculer valeurs mensuelles selon le type de métrique
+        if metric_arg in ['rain', 'precipitation']:
+            monthly_data = df.groupby(['year', 'month'])[column_name].sum().reset_index()
+        else:
+            monthly_data = df.groupby(['year', 'month'])[column_name].mean().reset_index()
+        
+        if not monthly_data.empty:
+            # Style barres : barres groupées par année pour chaque mois
+            available_years_bars = sorted(monthly_data['year'].unique())
+            available_months = sorted(monthly_data['month'].unique())
+            
+            # Noms des mois
+            month_names_bars = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun',
+                      'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
+            
+            # Couleurs pour les années (mêmes que le premier graphique)
+            year_colors = modern_colors[:len(available_years_bars)]
+            
+            # Créer les barres groupées
+            x_positions = np.arange(len(available_months))
+            n_years = len(available_years_bars)
+            width = 0.8 / n_years
+            
+            for i, year in enumerate(available_years_bars):
+                year_data = monthly_data[monthly_data['year'] == year]
+                values = []
+                
+                for month in available_months:
+                    month_row = year_data[year_data['month'] == month]
+                    if not month_row.empty:
+                        values.append(month_row[column_name].iloc[0])
+                    else:
+                        values.append(0)
+                
+                year_color = year_colors[i % len(year_colors)]
+                offset = (i - n_years/2 + 0.5) * width
+                
+                # Style spécial pour l'année courante
+                if year == current_year:
+                    bars = ax2.bar(x_positions + offset, values, width,
+                                  label=f'📍 {year} (actuelle)', color=year_color,
+                                  alpha=0.9, edgecolor='white', linewidth=2,
+                                  zorder=5)
+                    # Ajouter des valeurs sur les barres de l'année courante
+                    for j, bar in enumerate(bars):
+                        if values[j] > 0:
+                            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(values)*0.01,
+                                   f'{values[j]:.0f}', ha='center', va='bottom',
+                                   fontsize=9, fontweight='bold', color=year_color)
+                else:
+                    ax2.bar(x_positions + offset, values, width,
+                           label=f'📅 {year}', color=year_color,
+                           alpha=0.7, edgecolor='white', linewidth=1,
+                           zorder=3)
+            
+            # Mise en évidence du mois actuel
+            current_month = pd.Timestamp.now(tz='Europe/Berlin').month
+            if current_month in available_months:
+                month_idx = available_months.index(current_month)
+                ax2.axvspan(month_idx - 0.4, month_idx + 0.4,
+                           alpha=0.2, color='#f39c12', zorder=1,
+                           label=f"📍 Mois actuel ({month_names_bars[current_month-1]})")
+            
+            # Configuration des axes pour style mensuel
+            ax2.set_xticks(x_positions)
+            ax2.set_xticklabels([month_names_bars[m-1] for m in available_months])
+            ax2.set_title(f'📊 {metric_info["emoji"]} {metric_info["name"]} (barres mensuelles) - {len(available_years_bars)} années à {VILLE}\n'
+                         f'📊 Comparaison par mois (excl. août 2023)',
+                         fontsize=16, fontweight='bold', color='#2c3e50', pad=20)
+            
+            # Légende moderne
+            legend = ax2.legend(bbox_to_anchor=(1.02, 1), loc='upper left',
+                               frameon=True, shadow=True, fancybox=True,
+                               framealpha=0.95, edgecolor='#bdc3c7')
+            legend.get_frame().set_facecolor('#ffffff')
+        
+        # Style commun des axes
+        ax2.set_ylabel(f'{metric_info["emoji"]} {metric_info["name"]} ({metric_info["unit"]})',
+                      fontsize=14, color='#2c3e50', fontweight='bold')
+        ax2.set_xlabel('📅 Mois', fontsize=14, color='#2c3e50', fontweight='bold')
+        
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
+        ax2.spines['left'].set_color('#bdc3c7')
+        ax2.spines['bottom'].set_color('#bdc3c7')
+        ax2.tick_params(colors='#34495e', labelsize=11)
+        
+        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, fontsize=10)
+        ax2.grid(True, alpha=0.3, linestyle=':', linewidth=1, axis='y')
+        plt.tight_layout()
+        
+        # Envoyer le deuxième graphique (barres)
+        caption2 = f"📊 Comparaison mensuelle (barres)\n{base_caption}"
+        await send_graph(message.chat.id, fig2, caption2)
         
     except ValueError as e:
         await message.reply("Paramètres invalides. Vérifiez la syntaxe de la commande.")

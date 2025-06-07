@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Rymentz
-* VERSIONS : v1.9.0
+* VERSIONS : v1.9.1
 * NOTES : None
 *
 '''
@@ -1250,7 +1250,31 @@ def generate_summary(df_summary):
     else:
         df['daily_precipitation'] = 0 # Colonne par défaut si 'precipitation' manque
 
-    sunshine_hours = calculate_sunshine_hours(df)
+    # Calculs mensuels pour ensoleillement et précipitations
+    df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
+    df['year_month'] = df['local_time'].dt.to_period('M')
+    
+    # Calculer l'ensoleillement mensuel
+    sunniest_month = "N/A"
+    rainiest_month = "N/A"
+    
+    try:
+        monthly_sunshine = df.groupby('year_month').apply(calculate_sunshine_hours)
+        if not monthly_sunshine.empty:
+            sunniest_period = monthly_sunshine.idxmax()
+            sunniest_month = f"{sunniest_period.strftime('%B %Y')} ({monthly_sunshine.max():.1f}h)"
+    except Exception:
+        pass
+    
+    # Calculer les précipitations mensuelles
+    try:
+        if 'precipitation' in df.columns and pd.api.types.is_numeric_dtype(df['precipitation']):
+            monthly_precip = df.groupby('year_month')['precipitation'].sum()
+            if not monthly_precip.empty:
+                rainiest_period = monthly_precip.idxmax()
+                rainiest_month = f"{rainiest_period.strftime('%B %Y')} ({monthly_precip.max():.1f}mm)"
+    except Exception:
+        pass
 
     max_temp, idx_hot_day = get_stat(df, 'temperature_2m', 'max'), get_stat(df, 'temperature_2m', 'idxmax')
     min_temp, idx_cold_day = get_stat(df, 'temperature_2m', 'min'), get_stat(df, 'temperature_2m', 'idxmin')
@@ -1258,7 +1282,6 @@ def generate_summary(df_summary):
     max_uv_index, idx_uv_day = get_stat(df, 'uv_index', 'max'), get_stat(df, 'uv_index', 'idxmax')
     max_wind_speed, idx_wind_day = get_stat(df, 'windspeed_10m', 'max'), get_stat(df, 'windspeed_10m', 'idxmax')
     avg_temp = get_stat(df, 'temperature_2m', 'mean')
-    total_precipitation = get_stat(df, 'precipitation', 'sum')
     max_humidity, idx_humid_day = get_stat(df, 'relativehumidity_2m', 'max'), get_stat(df, 'relativehumidity_2m', 'idxmax')
     min_humidity, idx_dry_day = get_stat(df, 'relativehumidity_2m', 'min'), get_stat(df, 'relativehumidity_2m', 'idxmin')
     rainy_days = get_stat(df, 'precipitation', 'nunique_rainy')
@@ -1289,10 +1312,10 @@ def generate_summary(df_summary):
         f"💨 Jour le plus venteux: {wind_day_berlin} ({max_wind_speed:.1f} km/h)" if pd.notna(max_wind_speed) else "💨 Vent max: N/A",
         f"🌂 Nombre de jours de pluie (>0.1mm): {rainy_days}" if pd.notna(rainy_days) else "🌂 Jours de pluie: N/A",
         f"🌡️ Température moyenne: {avg_temp:.1f}°C" if pd.notna(avg_temp) else "🌡️ Temp. moyenne: N/A",
-        f"💧 Précipitations totales: {total_precipitation:.1f}mm" if pd.notna(total_precipitation) else "💧 Précip. totales: N/A",
+        f"🌧️ Mois le plus pluvieux: {rainiest_month}",
         f"💦 Jour le plus humide: {humid_day_berlin} ({max_humidity:.1f}%)" if pd.notna(max_humidity) else "💦 Humidité max: N/A",
         f"🏜️ Jour le plus sec: {dry_day_berlin} ({min_humidity:.1f}%)" if pd.notna(min_humidity) else "🏜️ Humidité min: N/A",
-        f"☀️ Heures d'ensoleillement estimées: {sunshine_hours:.1f} heures" if pd.notna(sunshine_hours) else "☀️ Ensoleillement: N/A"
+        f"☀️ Mois le plus ensoleillé: {sunniest_month}"
     ]
     return "\n".join(summary_parts)
 
@@ -1372,7 +1395,7 @@ async def start_command(message: types.Message):
             "📊 **Commandes de base :**\n"
             "/weather - Dernières données météo enregistrées\n"
             "/forecast - Prévisions pour les prochaines heures\n"
-            "/sunshine - Résumé mensuel de l'ensoleillement\n\n"
+            "/sunshine - Graphique barres ensoleillement par mois/année\n\n"
             "📅 **Résumés par période :**\n"
             "/month - Résumé du mois dernier\n"
             "/year - Résumé de l'année en cours\n"
@@ -1385,7 +1408,7 @@ async def start_command(message: types.Message):
             "/heatmap [année|all] - Ex: /heatmap 2024 ou /heatmap all\n"
             "/yearcompare [métrique] - Ex: /yearcompare temperature\n"
             "   Métriques: temperature, rain, wind, pressure\n"
-            "/sunshinecompare - Comparaison ensoleillement multi-années\n"
+            "/sunshinecompare - Liste texte ensoleillement mensuel\n"
             "/top10 <métrique> - Ex: /top10 temperature\n"
             "   Métriques: temperature, rain, wind, pressure, uv, humidity\n\n"
             f"💡 **Exemples rapides :**\n"
@@ -1507,7 +1530,8 @@ async def get_forecast_command(message: types.Message): # Renommé pour clarté
 
 
 @router.message(Command("sunshine"))
-async def get_sunshine_summary_command(message: types.Message): # Renommé pour clarté
+async def get_sunshine_summary_command(message: types.Message):
+    """Génère un graphique en barres de l'ensoleillement mensuel par année."""
     try:
         if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
             await message.reply("Aucune donnée disponible pour calculer l'ensoleillement.")
@@ -1519,36 +1543,166 @@ async def get_sunshine_summary_command(message: types.Message): # Renommé pour 
             return
 
         df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
-        df.dropna(subset=['time'], inplace=True) # Important après conversion
+        df.dropna(subset=['time'], inplace=True)
 
-        if df.empty: # Peut devenir vide après dropna
+        if df.empty:
             await message.reply("Aucune donnée temporelle valide pour calculer l'ensoleillement.")
             return
 
-        monthly_sunshine = calculate_monthly_sunshine(df) # Attendre le résultat
+        # Convertir en heure locale et extraire année/mois
+        df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
+        df['year'] = df['local_time'].dt.year
+        df['month'] = df['local_time'].dt.month
         
-        if monthly_sunshine.empty:
+        # Vérifier qu'on a au moins quelques mois de données
+        available_years = sorted(df['year'].unique())
+        if len(available_years) == 0:
             await message.reply(f"Pas encore de données d'ensoleillement calculées pour {VILLE}.")
             return
 
-        # Trier par date (l'index est déjà YYYY-MM, donc tri alphabétique fonctionne)
-        monthly_sunshine = monthly_sunshine.sort_index()
+        # Calculer l'ensoleillement mensuel pour chaque année
+        monthly_sunshine_data = []
         
-        response = f"☀️ Résumé mensuel de l'ensoleillement estimé pour {VILLE} :\n\n"
-        current_month_year_str = pd.Timestamp.now(tz='Europe/Berlin').strftime('%Y-%m')
+        for year in available_years:
+            year_data = df[df['year'] == year].copy()
+            if not year_data.empty:
+                # Grouper par mois et calculer l'ensoleillement pour chaque mois
+                for month in range(1, 13):
+                    month_data = year_data[year_data['month'] == month]
+                    if not month_data.empty and len(month_data) >= 24:  # Au moins une journée de données
+                        sunshine_hours = calculate_sunshine_hours(month_data)
+                        monthly_sunshine_data.append({
+                            'year': year,
+                            'month': month,
+                            'sunshine_hours': sunshine_hours
+                        })
+
+        if not monthly_sunshine_data:
+            await message.reply("Pas assez de données pour calculer l'ensoleillement mensuel.")
+            return
+
+        sunshine_df = pd.DataFrame(monthly_sunshine_data)
         
-        for date_str, hours in monthly_sunshine.items():
-            # Convertir YYYY-MM en nom de mois et année pour affichage
-            try:
-                month_display = pd.to_datetime(date_str + "-01").strftime('%B %Y')
-            except ValueError:
-                month_display = date_str # Fallback si le format est inattendu
+        # Préparer les données pour le graphique en barres groupées
+        pivot_data = sunshine_df.pivot(index='month', columns='year', values='sunshine_hours')
+        
+        # Créer le graphique moderne en barres groupées
+        fig, ax = plt.subplots(1, 1, figsize=(16, 10))
+        fig.patch.set_facecolor('#f8f9fa')
+        
+        # Palette de couleurs moderne pour l'ensoleillement
+        sunshine_colors = ['#f39c12', '#e67e22', '#d35400', '#f1c40f', '#f4d03f',
+                          '#3498db', '#2980b9', '#9b59b6', '#8e44ad', '#2ecc71']
+        
+        # Noms des mois
+        month_names = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun',
+                      'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
+        
+        # Créer les barres groupées
+        x = np.arange(len(month_names))  # positions des mois
+        n_years = len(available_years)
+        width = 0.8 / n_years  # largeur de chaque barre
+        
+        current_year = pd.Timestamp.now(tz='Europe/Berlin').year
+        
+        # Tracer les barres pour chaque année
+        for i, year in enumerate(available_years):
+            if year in pivot_data.columns:
+                values = []
+                for month in range(1, 13):
+                    if month in pivot_data.index and pd.notna(pivot_data.loc[month, year]):
+                        values.append(pivot_data.loc[month, year])
+                    else:
+                        values.append(0)  # 0 pour les mois sans données
+                
+                color = sunshine_colors[i % len(sunshine_colors)]
+                offset = (i - n_years/2 + 0.5) * width
+                
+                # Style spécial pour l'année courante
+                if year == current_year:
+                    bars = ax.bar(x + offset, values, width,
+                                 label=f'☀️ {year} (actuelle)', color=color,
+                                 alpha=0.9, edgecolor='white', linewidth=2,
+                                 zorder=5)
+                    # Ajouter des valeurs sur les barres de l'année courante
+                    for j, bar in enumerate(bars):
+                        if values[j] > 0:
+                            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
+                                   f'{values[j]:.0f}h', ha='center', va='bottom',
+                                   fontsize=9, fontweight='bold', color=color)
+                else:
+                    ax.bar(x + offset, values, width,
+                          label=f'🌤️ {year}', color=color,
+                          alpha=0.7, edgecolor='white', linewidth=1,
+                          zorder=3)
+        
+        # Mise en évidence du mois actuel
+        current_month = pd.Timestamp.now(tz='Europe/Berlin').month
+        ax.axvspan(current_month - 1 - 0.4, current_month - 1 + 0.4,
+                  alpha=0.2, color='#f39c12', zorder=1,
+                  label=f"📍 Mois actuel ({month_names[current_month-1]})")
+        
+        # Titre moderne avec emojis
+        ax.set_title(f'☀️ Ensoleillement mensuel par année - {VILLE}\n'
+                    f'📊 Comparaison de {len(available_years)} années de données',
+                    fontsize=18, fontweight='bold', color='#2c3e50', pad=25)
+        
+        # Labels modernes avec emojis
+        ax.set_xlabel('📅 Mois', fontsize=14, color='#2c3e50', fontweight='bold')
+        ax.set_ylabel('☀️ Heures d\'ensoleillement', fontsize=14, color='#2c3e50', fontweight='bold')
+        
+        # Configurer l'axe X avec les noms des mois
+        ax.set_xticks(x)
+        ax.set_xticklabels(month_names)
+        
+        # Style moderne des axes
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('#bdc3c7')
+        ax.spines['bottom'].set_color('#bdc3c7')
+        ax.tick_params(colors='#34495e', labelsize=11)
+        
+        # Légende moderne
+        legend = ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left',
+                          frameon=True, shadow=True, fancybox=True,
+                          framealpha=0.95, edgecolor='#bdc3c7')
+        legend.get_frame().set_facecolor('#ffffff')
+        
+        # Zones saisonnières en arrière-plan
+        ax.axvspan(-0.5, 1.5, alpha=0.05, color='#74b9ff')    # Hiver
+        ax.axvspan(1.5, 4.5, alpha=0.05, color='#55a3ff')     # Printemps
+        ax.axvspan(4.5, 7.5, alpha=0.05, color='#fdcb6e')     # Été
+        ax.axvspan(7.5, 10.5, alpha=0.05, color='#e17055')    # Automne
+        ax.axvspan(10.5, 11.5, alpha=0.05, color='#74b9ff')   # Hiver
+        
+        # Grille moderne
+        ax.grid(True, alpha=0.3, linestyle=':', linewidth=1, axis='y')
+        
+        plt.tight_layout()
+        
+        # Statistiques pour la légende
+        stats_text = ""
+        if len(available_years) > 1:
+            # Calculer la moyenne par mois sur toutes les années
+            monthly_averages = sunshine_df.groupby('month')['sunshine_hours'].mean()
+            best_month = monthly_averages.idxmax()
+            worst_month = monthly_averages.idxmin()
             
-            is_current = date_str == current_month_year_str
-            month_marker = "📍 " if is_current else "📅 "
-            response += f"{month_marker}{month_display}: {hours:.1f} heures\n"
+            stats_text += f"📊 Statistiques globales:\n"
+            stats_text += f"☀️ Meilleur mois: {month_names[best_month-1]} ({monthly_averages[best_month]:.1f}h)\n"
+            stats_text += f"☁️ Moins ensoleillé: {month_names[worst_month-1]} ({monthly_averages[worst_month]:.1f}h)\n"
+            
+            # Données pour le mois actuel
+            current_month_data = sunshine_df[sunshine_df['month'] == current_month]
+            if not current_month_data.empty:
+                current_month_avg = current_month_data['sunshine_hours'].mean()
+                stats_text += f"📍 Mois actuel (moy.): {current_month_avg:.1f}h"
         
-        await message.reply(response)
+        caption = (f"☀️ Ensoleillement mensuel en barres - {len(available_years)} années\n"
+                  f"📅 Années: {min(available_years)}-{max(available_years)}\n"
+                  f"{stats_text}")
+        
+        await send_graph(message.chat.id, fig, caption)
         
     except pd.errors.EmptyDataError:
         await message.reply("Le fichier de données est vide, impossible de calculer l'ensoleillement.")
@@ -2344,195 +2498,68 @@ async def get_heatmap_command(message: types.Message):
 
 @router.message(Command("sunshinecompare"))
 async def get_sunshine_compare_command(message: types.Message):
-    """Compare l'ensoleillement entre différentes années. Usage: /sunshinecompare"""
+    """Affiche un résumé textuel mensuel de l'ensoleillement. Usage: /sunshinecompare"""
     try:
-        # Lire les données
         if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
-            await message.reply("Aucune donnée météo disponible.")
+            await message.reply("Aucune donnée disponible pour calculer l'ensoleillement.")
             return
-        
+            
         df = pd.read_csv(csv_filename)
         if df.empty:
-            await message.reply("Aucune donnée disponible.")
+            await message.reply("Aucune donnée disponible pour calculer l'ensoleillement (fichier vide).")
             return
-        
+
         df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
         df.dropna(subset=['time'], inplace=True)
-        
-        # Vérifier les colonnes nécessaires pour l'ensoleillement
-        required_cols = ['uv_index', 'precipitation', 'relativehumidity_2m']
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            await message.reply(f"Données manquantes pour le calcul d'ensoleillement: {', '.join(missing_cols)}")
+
+        if df.empty:
+            await message.reply("Aucune donnée temporelle valide pour calculer l'ensoleillement.")
             return
+
+        monthly_sunshine = calculate_monthly_sunshine(df)
         
-        # Convertir en heure locale et extraire date/heure
-        df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
-        df['year'] = df['local_time'].dt.year
-        df['date'] = df['local_time'].dt.date
-        df['day_of_year'] = df['local_time'].dt.dayofyear
-        
-        # Vérifier qu'on a au moins 2 années de données
-        available_years = sorted(df['year'].unique())
-        if len(available_years) < 2:
-            await message.reply("Pas assez d'années de données pour faire une comparaison (minimum 2 années).")
+        if monthly_sunshine.empty:
+            await message.reply(f"Pas encore de données d'ensoleillement calculées pour {VILLE}.")
             return
+
+        # Trier par date (l'index est déjà YYYY-MM, donc tri alphabétique fonctionne)
+        monthly_sunshine = monthly_sunshine.sort_index()
         
-        current_year = pd.Timestamp.now(tz='Europe/Berlin').year
-        current_day_of_year = pd.Timestamp.now(tz='Europe/Berlin').dayofyear
+        # Détecter le premier mois avec des données (peut être partiel)
+        first_month = monthly_sunshine.index[0] if not monthly_sunshine.empty else None
+        current_month_year_str = pd.Timestamp.now(tz='Europe/Berlin').strftime('%Y-%m')
         
-        # Calculer l'ensoleillement journalier par année
-        daily_sunshine_data = []
+        response = f"☀️ Résumé mensuel de l'ensoleillement estimé pour {VILLE} :\n"
+        response += f"📅 Début des mesures : {first_month} (données possiblement partielles)\n\n"
         
-        for year in available_years:
-            await message.reply(f"📊 Calcul en cours pour {year}...")  # Feedback pendant le calcul
-            year_data = df[df['year'] == year].copy()
+        for i, (date_str, hours) in enumerate(monthly_sunshine.items()):
+            # Convertir YYYY-MM en nom de mois et année pour affichage
+            try:
+                month_display = pd.to_datetime(date_str + "-01").strftime('%B %Y')
+            except ValueError:
+                month_display = date_str # Fallback si le format est inattendu
             
-            if not year_data.empty:
-                # Grouper par date et calculer l'ensoleillement pour chaque jour
-                for date, day_group in year_data.groupby('date'):
-                    if len(day_group) >= 12:  # Assez de données dans la journée
-                        sunshine_hours = calculate_sunshine_hours(day_group)
-                        day_of_year = pd.to_datetime(date).timetuple().tm_yday
-                        
-                        daily_sunshine_data.append({
-                            'year': year,
-                            'date': date,
-                            'day_of_year': day_of_year,
-                            'sunshine_hours': sunshine_hours
-                        })
-        
-        if not daily_sunshine_data:
-            await message.reply("Pas assez de données pour calculer l'ensoleillement quotidien.")
-            return
-        
-        sunshine_df = pd.DataFrame(daily_sunshine_data)
-        
-        # Créer le graphique moderne
-        fig, ax = plt.subplots(1, 1, figsize=(16, 10))
-        fig.patch.set_facecolor('#f8f9fa')
-        
-        # Palette de couleurs moderne spéciale pour l'ensoleillement
-        sunshine_colors = ['#f39c12', '#e67e22', '#d35400', '#2ecc71', '#27ae60',
-                          '#3498db', '#2980b9', '#9b59b6', '#8e44ad', '#34495e']
-        
-        # Tracer chaque année avec style moderne
-        for i, year in enumerate(available_years):
-            year_data = sunshine_df[sunshine_df['year'] == year]
+            is_current = date_str == current_month_year_str
+            is_first = i == 0
             
-            if not year_data.empty:
-                color = sunshine_colors[i % len(sunshine_colors)]
-                
-                # Style spécial pour l'année courante
-                if year == current_year:
-                    ax.plot(year_data['day_of_year'], year_data['sunshine_hours'],
-                           color=color, linewidth=4, label=f'☀️ {year} (actuelle)',
-                           alpha=0.95, zorder=5, marker='o', markersize=3,
-                           markevery=30)
-                else:
-                    ax.plot(year_data['day_of_year'], year_data['sunshine_hours'],
-                           color=color, linewidth=2.5, label=f'🌤️ {year}',
-                           alpha=0.8, zorder=3)
-        
-        # Ligne verticale moderne pour "aujourd'hui"
-        ax.axvline(x=current_day_of_year, color='#f39c12', linestyle='--',
-                  linewidth=3, alpha=0.9, zorder=10,
-                  label=f"📍 Aujourd'hui (jour {current_day_of_year})")
-        
-        # Zone d'intérêt moderne avec gradient doré pour l'ensoleillement
-        highlight_start = max(1, current_day_of_year - 15)
-        highlight_end = min(366, current_day_of_year + 15)
-        ax.axvspan(highlight_start, highlight_end, alpha=0.15, color='#f39c12',
-                  label='☀️ Période actuelle ±15j', zorder=1)
-        
-        # Titre moderne avec emojis
-        ax.set_title(f'☀️ Comparaison annuelle - Ensoleillement quotidien à {VILLE}\n'
-                    f'📊 Analyse de {len(available_years)} années de données',
-                    fontsize=18, fontweight='bold', color='#2c3e50', pad=25)
-        
-        # Labels modernes avec emojis
-        ax.set_xlabel('📅 Jour de l\'année', fontsize=14, color='#2c3e50', fontweight='bold')
-        ax.set_ylabel('☀️ Heures d\'ensoleillement', fontsize=14, color='#2c3e50', fontweight='bold')
-        
-        # Style moderne des axes
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_color('#bdc3c7')
-        ax.spines['bottom'].set_color('#bdc3c7')
-        ax.tick_params(colors='#34495e', labelsize=11)
-        
-        # Légende moderne
-        legend = ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left',
-                          frameon=True, shadow=True, fancybox=True,
-                          framealpha=0.95, edgecolor='#bdc3c7')
-        legend.get_frame().set_facecolor('#ffffff')
-        
-        # Marques des mois sur l'axe X
-        month_starts = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
-        month_names = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun',
-                      'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
-        ax.set_xticks(month_starts)
-        ax.set_xticklabels(month_names)
-        
-        # Zones saisonnières colorées en arrière-plan
-        ax.axvspan(1, 80, alpha=0.1, color='#74b9ff', label='❄️ Hiver')     # Hiver
-        ax.axvspan(80, 172, alpha=0.1, color='#55a3ff', label='🌸 Printemps')  # Printemps
-        ax.axvspan(172, 266, alpha=0.1, color='#fdcb6e', label='☀️ Été')     # Été
-        ax.axvspan(266, 355, alpha=0.1, color='#e17055', label='🍂 Automne')  # Automne
-        ax.axvspan(355, 366, alpha=0.1, color='#74b9ff')                    # Fin hiver
-        
-        plt.tight_layout()
-        
-        # Statistiques pour la période actuelle
-        current_period_data = sunshine_df[
-            (sunshine_df['day_of_year'] >= highlight_start) &
-            (sunshine_df['day_of_year'] <= highlight_end)
-        ]
-        
-        stats_by_year = {}
-        annual_totals = {}
-        
-        for year in available_years:
-            year_period = current_period_data[current_period_data['year'] == year]
-            year_all = sunshine_df[sunshine_df['year'] == year]
+            if is_current:
+                month_marker = "📍 "
+            elif is_first:
+                month_marker = "🚀 "  # Premier mois
+            else:
+                month_marker = "📅 "
             
-            if not year_period.empty:
-                stats_by_year[year] = year_period['sunshine_hours'].mean()
-            
-            if not year_all.empty:
-                annual_totals[year] = year_all['sunshine_hours'].sum()
+            response += f"{month_marker}{month_display}: {hours:.1f} heures\n"
         
-        # Préparer le texte des statistiques
-        stats_text = f"☀️ Moyennes quotidiennes période actuelle (±15j):\n"
-        for year, avg_val in sorted(stats_by_year.items()):
-            marker = " 👈" if year == current_year else ""
-            stats_text += f"{year}: {avg_val:.1f}h{marker}\n"
+        await message.reply(response)
         
-        stats_text += f"\n📊 Totaux annuels estimés:\n"
-        for year, total_val in sorted(annual_totals.items()):
-            marker = " 👈" if year == current_year else ""
-            stats_text += f"{year}: {total_val:.0f}h{marker}\n"
-        
-        # Tendance générale
-        if len(annual_totals) >= 3:
-            years_list = list(annual_totals.keys())
-            values_list = list(annual_totals.values())
-            
-            # Régression linéaire simple
-            if len(values_list) > 1:
-                slope = (values_list[-1] - values_list[0]) / (years_list[-1] - years_list[0])
-                trend = "☀️ plus ensoleillé" if slope > 0 else "☁️ moins ensoleillé" if slope < 0 else "➡️ stable"
-                stats_text += f"\n📈 Tendance générale: {trend} ({slope:.0f}h/an)"
-        
-        caption = (f"☀️ Comparaison ensoleillement - {len(available_years)} années\n"
-                  f"📅 Années: {min(available_years)}-{max(available_years)}\n"
-                  f"{stats_text}")
-        
-        await send_graph(message.chat.id, fig, caption)
-        
+    except pd.errors.EmptyDataError:
+        await message.reply("Le fichier de données est vide, impossible de calculer l'ensoleillement.")
+    except FileNotFoundError:
+        await message.reply("Fichier de données non trouvé pour calculer l'ensoleillement.")
     except Exception as e:
-        await log_message(f"Erreur dans sunshinecompare_command: {str(e)}\n{traceback.format_exc()}")
-        await message.reply("Erreur lors de la génération de la comparaison d'ensoleillement.")
+        await log_message(f"Error in get_sunshine_compare_command: {str(e)}\n{traceback.format_exc()}")
+        await message.reply("Erreur lors de l'obtention du résumé de l'ensoleillement.")
 
 @router.message(Command("yearcompare"))
 async def get_year_compare_command(message: types.Message):

@@ -42,12 +42,12 @@ MeteoCheck est un bot Telegram météorologique complet qui surveille et analyse
   * `/top10 <métrique>` - Classement des valeurs extrêmes
 
 #### 🎯 Exemples d'utilisation
-*`/graph rain 7`          # Précipitations des 7 derniers jours
-*`/heatmap all`           # Calendrier thermique toutes années
-*`/yearcompare wind`      # Comparaison des vents par année
-*`/sunshinecompare`       # Liste texte ensoleillement mensuel
-*`/top10 temperature`     # Records de température
-*`/daterange 2024-06-01 2024-08-31`  # Analyse été 2024
+* `/graph rain 7`          # Précipitations des 7 derniers jours
+* `/heatmap all`           # Calendrier thermique toutes années
+* `/yearcompare wind`      # Comparaison des vents par année
+* `/sunshinecompare`       # Liste texte ensoleillement mensuel
+* `/top10 temperature`     # Records de température
+* `/daterange 2024-06-01 2024-08-31`  # Analyse été 2024
 
 ### 🔗 Liens utiles
 * 🔗 [Configurateur API pour votre ville](https://open-meteo.com/en/docs)

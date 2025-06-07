@@ -1,4 +1,4 @@
-# 🌦 MeteoCheck - Bot Météo Telegram Avancée
+# 🌦 MeteoCheck - Bot Météo Telegram Avancé
 
 ### 📌 Description
 MeteoCheck est un bot Telegram météorologique complet qui surveille et analyse les conditions météorologiques 24h/7j en utilisant l'[API open-meteo.com](https://open-meteo.com/en/docs).
@@ -31,52 +31,69 @@ MeteoCheck est un bot Telegram météorologique complet qui surveille et analyse
   * `/graph <métrique> [jours]` - Graphiques détaillés avec moyennes mobiles
     * Métriques : `temperature`, `rain`, `wind`, `pressure`, `uv`, `humidity`
     * Exemple : `/graph temperature 30` (30 derniers jours)
-  * `/forecastgraph` - Graphique des prévisions 24h avec codes couleur méteo
+  * `/forecastgraph` - Graphique des prévisions 24h avec codes couleur météo style MeteoSuisse
 
 * **Analyses comparatives :**
   * `/heatmap [année|all]` - Calendriers thermiques style GitHub
     * `/heatmap 2024` - Année spécifique
     * `/heatmap all` - Vue multi-années
   * `/yearcompare [métrique]` - Comparaison inter-annuelle avec tendances
+  * `/sunshinecompare` - Analyse multi-années de l'ensoleillement
   * `/top10 <métrique>` - Classement des valeurs extrêmes
 
 #### 🎯 Exemples d'utilisation
 /graph rain 7          # Précipitations des 7 derniers jours
 /heatmap all           # Calendrier thermique toutes années
 /yearcompare wind      # Comparaison des vents par année
+/sunshinecompare       # Évolution ensoleillement multi-années
 /top10 temperature     # Records de température
 /daterange 2024-06-01 2024-08-31  # Analyse été 2024
 
 ### 🔗 Liens utiles
 * 🔗 [Configurateur API pour votre ville](https://open-meteo.com/en/docs)
 
-### 🆕 Nouvelles fonctionnalités majeures
-* [✅] **Graphiques météo avancés** avec palettes de couleurs modernes et moyennes mobiles
-* [✅] **Calendriers thermiques** style GitHub avec vue multi-années
+### 🆕 Nouvelles fonctionnalités majeures v2025
+* [✅] **Système de cache intelligent** - Optimisation des appels API avec cache 5 minutes
+* [✅] **Graphiques météo avancés** avec palettes MeteoSuisse et moyennes mobiles
+* [✅] **Calendriers thermiques multi-années** style GitHub avec vue comparative
 * [✅] **Détection scientifique de bombes météorologiques** avec seuils ajustés par latitude
 * [✅] **Système de comparaison inter-annuelle** avec analyse de tendances
-* [✅] **Top 10 des records** avec horodatage précis
+* [✅] **Analyse d'ensoleillement multi-années** avec calculs astronomiques précis
+* [✅] **Top 10 des records** avec horodatage et classification
 * [✅] **Résumés de période personnalisables** avec commande `/daterange`
-* [✅] **Calculs d'ensoleillement astronomiques** précis selon la géolocalisation
 * [✅] **Interface moderne** avec emojis et codes couleur météorologiques
+* [✅] **Gestion intelligente des notifications** - Anti-spam pour records prévus
 
 ### 🚀 Fonctionnalités techniques avancées
-* **Architecture asynchrone** avec aiogram 3.x pour performances optimales
-* **Visualisations matplotlib/seaborn** avec styles modernes
-* **Gestion robuste des erreurs** et logging détaillé
-* **Calculs astronomiques** pour lever/coucher du soleil selon latitude
-* **Palettes de couleurs météorologiques** conformes aux standards MeteoSuisse
-* **Moyennes mobiles** et analyses de tendances
-* **Formatage temporel intelligent** adaptatif selon la période
+* **Architecture asynchrone moderne** avec aiogram 3.x et aiohttp pour performances optimales
+* **Système de cache API** avec validation temporelle automatique
+* **Visualisations matplotlib/seaborn** avec palettes MeteoSuisse authentiques
+* **Gestion robuste des erreurs** avec retry automatique et logging détaillé
+* **Calculs astronomiques** pour lever/coucher du soleil selon latitude exacte
+* **Palettes de couleurs météorologiques** conformes aux standards internationaux
+* **Moyennes mobiles** et analyses de tendances avec régression linéaire
+* **Formatage temporel intelligent** adaptatif selon la période d'analyse
+* **Anti-spam intelligent** pour les alertes de records avec confiance adaptative
+
+### 🎨 Améliorations visuelles v2025
+* **Graphiques style GitHub** avec zones saisonnières colorées
+* **Gradient de couleurs MeteoSuisse** pour précipitations (bruine → extrême)
+* **Légendes interactives** avec emojis saisonniers et indicateurs d'intensité
+* **Axes temporels intelligents** - Formatage automatique selon la période
+* **Zones d'intérêt visuelles** - Mise en évidence de la période actuelle
+* **Statistiques enrichies** - Tendances, moyennes et comparaisons automatiques
 
 ### ⚠️ Note importante sur les données temporelles
-Le script enregistre toutes les données en UTC. L'API Open-Meteo est interrogée en GMT (UTC), garantissant une cohérence temporelle. Les affichages pour l'utilisateur sont automatiquement convertis en heure locale Europe/Berlin, mais le stockage reste en UTC pour assurer l'intégrité des comparaisons historiques et des calculs astronomiques.
+Le script enregistre toutes les données en UTC pour garantir la cohérence. L'API Open-Meteo est interrogée en GMT (UTC), et les affichages utilisateur sont automatiquement convertis en heure locale Europe/Berlin. Le stockage UTC assure l'intégrité des comparaisons historiques et des calculs astronomiques précis.
+
+### 🧠 Intelligence artificielle intégrée
+* **Détection de patterns météo** - Identification automatique de conditions extrêmes
+* **Prédiction de confiance** - Score adaptatif selon la proximité temporelle
+* **Alertes contextuelles** - Messages personnalisés selon l'intensité et l'urgence
+* **Optimisation adaptative** - Seuils d'alerte ajustés selon l'historique local
 
 ### 🪱 Logs et débogage
-* Logs détaillés dans `log_meteocheck.log`
-* Gestion d'erreurs avec retry automatique
-* Nettoyage automatique du CSV au démarrage
-
----
-
-**🎯 MeteoCheck combine surveillance météo en temps réel, analyses statistiques poussées et visualisations modernes pour offrir une expérience météorologique complète via Telegram.**
+* Logs détaillés dans `log_meteocheck.log` avec horodatage UTC
+* Gestion d'erreurs multi-niveaux avec retry automatique
+* Nettoyage automatique du CSV au démarrage avec validation des données
+* Monitoring des performances API avec statistiques de cache

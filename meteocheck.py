@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Rymentz
-* VERSIONS : v1.9.4
+* VERSIONS : v1.9.5
 * NOTES : None
 *
 '''
@@ -25,6 +25,8 @@ import matplotlib.dates as mdates
 import seaborn as sns
 import numpy as np
 import io
+import calendar
+import math
 from datetime import datetime as dt
 
 # Configuration style moderne pour les graphiques
@@ -1190,7 +1192,6 @@ def calculate_sunshine_hours(df_calc):
     # Basé sur l'équation du temps et la déclinaison solaire
     def get_daylight_hours_city(day_of_year):
         """Calcule les heures approximatives de lever/coucher du soleil pour la ville."""
-        import math
         
         # Déclinaison solaire (approximation)
         declination = 23.45 * math.sin(math.radians(360 * (284 + day_of_year) / 365))
@@ -1282,21 +1283,106 @@ def calculate_sunshine_hours(df_calc):
     return sunshine_hours
 
 
+def is_month_complete(df_month, year, month, metric_column=None):
+    """Vérifie si un mois a au moins une donnée par jour pour une métrique spécifique (sauf pour le mois en cours)."""
+    if df_month.empty:
+        return False
+    
+    # Le mois en cours est toujours accepté (même s'il est incomplet)
+    current_time = pd.Timestamp.now(tz='UTC')
+    current_year = current_time.year
+    current_month = current_time.month
+    
+    if year == current_year and month == current_month:
+        return True
+    
+    # Pour les mois historiques, vérifier qu'on a au moins une donnée par jour pour la métrique
+    days_in_month = calendar.monthrange(year, month)[1]
+    
+    # Si une métrique spécifique est demandée, filtrer seulement sur cette métrique
+    if metric_column and metric_column in df_month.columns:
+        df_filtered = df_month.dropna(subset=[metric_column]).copy()
+    else:
+        df_filtered = df_month.copy()
+    
+    if df_filtered.empty:
+        return False
+    
+    # Compter les jours uniques avec des données (pour cette métrique)
+    df_filtered['date'] = df_filtered['time'].dt.date
+    unique_days = df_filtered['date'].nunique()
+    
+    # Exiger au moins 80% des jours du mois pour considérer le mois comme complet
+    # (permet une petite tolérance pour les pannes/maintenance)
+    required_days = max(1, int(days_in_month * 0.8))
+    
+    return unique_days >= required_days
+
+def filter_complete_months_only(df_input, exclude_current_month=False, metric_column=None):
+    """Filtre un DataFrame pour ne garder que les mois avec des données complètes pour une métrique spécifique.
+    
+    Args:
+        df_input: DataFrame avec colonne 'time'
+        exclude_current_month: Si True, exclut aussi le mois en cours
+        metric_column: Si spécifié, filtre seulement sur cette métrique
+    
+    Returns:
+        DataFrame filtré
+    """
+    if df_input.empty:
+        return df_input
+    
+    df = df_input.copy()
+    if not pd.api.types.is_datetime64_any_dtype(df['time']):
+        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
+        df.dropna(subset=['time'], inplace=True)
+    
+    if df['time'].dt.tz is None:
+        df['time'] = df['time'].dt.tz_localize('UTC')
+    
+    # Ajouter colonnes année/mois pour le groupement
+    df['year'] = df['time'].dt.year
+    df['month'] = df['time'].dt.month
+    
+    # Identifier les mois complets pour la métrique spécifiée
+    complete_months = []
+    
+    for (year, month), group in df.groupby(['year', 'month']):
+        if is_month_complete(group, year, month, metric_column):
+            # Si on veut exclure le mois en cours et que c'est le mois en cours, skip
+            current_time = pd.Timestamp.now(tz='UTC')
+            if exclude_current_month and year == current_time.year and month == current_time.month:
+                continue
+            complete_months.append((year, month))
+    
+    # Filtrer le DataFrame pour ne garder que les mois complets
+    if not complete_months:
+        return pd.DataFrame(columns=df.columns)
+    
+    mask = df[['year', 'month']].apply(tuple, axis=1).isin(complete_months)
+    return df[mask].drop(['year', 'month'], axis=1)
+
 def calculate_monthly_sunshine(df_calc):
-    """Calcule les heures d'ensoleillement par mois."""
+    """Calcule les heures d'ensoleillement par mois (seulement pour les mois complets)."""
     df = df_calc.copy()
     if df.empty:
         return pd.Series(dtype=float)
 
-    if not pd.api.types.is_datetime64_any_dtype(df['time']):
-        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
-    df.dropna(subset=['time'], inplace=True)
-    if df['time'].dt.tz is None:
-         df['time'] = df['time'].dt.tz_localize('UTC')
+    # Filtrer pour ne garder que les mois complets (incluant le mois en cours) pour l'ensoleillement (UV principalement)
+    df_complete = filter_complete_months_only(df, exclude_current_month=False, metric_column='uv_index')
+    
+    if df_complete.empty:
+        return pd.Series(dtype=float)
+
+    if not pd.api.types.is_datetime64_any_dtype(df_complete['time']):
+        df_complete['time'] = pd.to_datetime(df_complete['time'], utc=True, errors='coerce')
+    df_complete.dropna(subset=['time'], inplace=True)
+    if df_complete['time'].dt.tz is None:
+         df_complete['time'] = df_complete['time'].dt.tz_localize('UTC')
     
     # Grouper par mois et appliquer le calcul d'ensoleillement
     # apply peut être lent sur de gros dataframes, mais pour des données mensuelles, c'est acceptable.
-    monthly_sunshine = df.groupby(pd.Grouper(key='time', freq='MS')).apply(calculate_sunshine_hours) # MS for Month Start
+    monthly_sunshine = df_complete.groupby(pd.Grouper(key='time', freq='MS')).apply(calculate_sunshine_hours) # MS for Month Start
     
     # Formatter l'index pour la lisibilité
     if not monthly_sunshine.empty:
@@ -1643,13 +1729,16 @@ async def get_sunshine_summary_command(message: types.Message):
             await message.reply("Aucune donnée temporelle valide pour calculer l'ensoleillement.")
             return
 
+        # Filtrer pour ne garder que les mois complets (incluant le mois en cours) pour l'ensoleillement (UV principalement)
+        df_complete = filter_complete_months_only(df, exclude_current_month=False, metric_column='uv_index')
+
         # Convertir en heure locale et extraire année/mois
-        df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
-        df['year'] = df['local_time'].dt.year
-        df['month'] = df['local_time'].dt.month
+        df_complete['local_time'] = df_complete['time'].dt.tz_convert('Europe/Berlin')
+        df_complete['year'] = df_complete['local_time'].dt.year
+        df_complete['month'] = df_complete['local_time'].dt.month
         
         # Vérifier qu'on a au moins quelques mois de données
-        available_years = sorted(df['year'].unique())
+        available_years = sorted(df_complete['year'].unique())
         if len(available_years) == 0:
             await message.reply(f"Pas encore de données d'ensoleillement calculées pour {VILLE}.")
             return
@@ -1658,12 +1747,12 @@ async def get_sunshine_summary_command(message: types.Message):
         monthly_sunshine_data = []
         
         for year in available_years:
-            year_data = df[df['year'] == year].copy()
+            year_data = df_complete[df_complete['year'] == year].copy()
             if not year_data.empty:
                 # Grouper par mois et calculer l'ensoleillement pour chaque mois
                 for month in range(1, 13):
                     month_data = year_data[year_data['month'] == month]
-                    if not month_data.empty and len(month_data) >= 24:  # Au moins une journée de données
+                    if not month_data.empty:  # Suppression du check >= 24 car le filtrage est fait en amont
                         sunshine_hours = calculate_sunshine_hours(month_data)
                         monthly_sunshine_data.append({
                             'year': year,
@@ -1864,7 +1953,7 @@ async def get_daterange_summary_command(message: types.Message):
         
         if df_period.empty:
             period_str = f"{start_date.strftime('%Y-%m-%d')} à {end_date.strftime('%Y-%m-%d')}"
-            await message.reply(f"No data available for the selected period ({period_str}).")
+            await message.reply(f"Aucune donnée disponible pour la période sélectionnée ({period_str}).")
             return
         
         # Générer le résumé
@@ -1931,12 +2020,15 @@ async def get_top10_command(message: types.Message):
         df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
         df.dropna(subset=['time'], inplace=True)
         
-        if column_name not in df.columns:
+        # Filtrer pour ne garder que les mois complets (incluant le mois en cours) pour cette métrique
+        df_complete = filter_complete_months_only(df, exclude_current_month=False, metric_column=column_name)
+        
+        if column_name not in df_complete.columns:
             await message.reply(f"Données pour {metric_info['name']} non disponibles.")
             return
         
         # Nettoyer les données et enlever les NaN
-        df_clean = df.dropna(subset=[column_name]).copy()
+        df_clean = df_complete.dropna(subset=[column_name]).copy()
         if df_clean.empty:
             await message.reply(f"Aucune donnée valide pour {metric_info['name']}.")
             return
@@ -2176,14 +2268,17 @@ async def get_graph_data_command(message: types.Message):
         df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
         df.dropna(subset=['time'], inplace=True)
         
-        if column_name not in df.columns:
+        # Filtrer pour ne garder que les mois complets (incluant le mois en cours) pour cette métrique
+        df_complete = filter_complete_months_only(df, exclude_current_month=False, metric_column=column_name)
+        
+        if column_name not in df_complete.columns:
             await message.reply(f"Données pour {metric_info['name']} non disponibles.")
             return
         
         # Filtrer les derniers N jours
         now = pd.Timestamp.now(tz='UTC')
         start_date = now - pd.Timedelta(days=days)
-        df_period = df[(df['time'] >= start_date) & (df['time'] <= now)].copy()
+        df_period = df_complete[(df_complete['time'] >= start_date) & (df_complete['time'] <= now)].copy()
         
         if df_period.empty:
             await message.reply(f"Aucune donnée disponible pour les {days} derniers jours.")
@@ -2466,23 +2561,26 @@ async def get_heatmap_command(message: types.Message):
         df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
         df.dropna(subset=['time'], inplace=True)
         
-        if 'temperature_2m' not in df.columns:
+        # Filtrer pour ne garder que les mois complets (incluant le mois en cours) pour la température
+        df_complete = filter_complete_months_only(df, exclude_current_month=False, metric_column='temperature_2m')
+        
+        if 'temperature_2m' not in df_complete.columns:
             await message.reply("Données de température non disponibles.")
             return
         
         if target_year == 'all':
             # Mode multi-années : toutes les années disponibles
-            df['local_time'] = df['time'].dt.tz_convert('Europe/Berlin')
-            df['date'] = df['local_time'].dt.date
-            df['year'] = df['local_time'].dt.year
+            df_complete['local_time'] = df_complete['time'].dt.tz_convert('Europe/Berlin')
+            df_complete['date'] = df_complete['local_time'].dt.date
+            df_complete['year'] = df_complete['local_time'].dt.year
             
-            available_years = sorted(df['year'].unique())
+            available_years = sorted(df_complete['year'].unique())
             if len(available_years) == 0:
                 await message.reply("Aucune donnée disponible.")
                 return
                 
             # Calculer moyennes journalières par année
-            daily_temps = df.groupby(['year', 'date'])['temperature_2m'].mean().reset_index()
+            daily_temps = df_complete.groupby(['year', 'date'])['temperature_2m'].mean().reset_index()
             
             if daily_temps.empty:
                 await message.reply("Aucune donnée de température valide.")
@@ -2518,7 +2616,7 @@ async def get_heatmap_command(message: types.Message):
             
         else:
             # Mode année unique (code existant)
-            df_year = df[df['time'].dt.year == target_year].copy()
+            df_year = df_complete[df_complete['time'].dt.year == target_year].copy()
             if df_year.empty:
                 await message.reply(f"Aucune donnée disponible pour l'année {target_year}.")
                 return
@@ -2695,6 +2793,7 @@ async def get_sunshine_list_command(message: types.Message):
             await message.reply("Aucune donnée temporelle valide pour calculer l'ensoleillement.")
             return
 
+        # calculate_monthly_sunshine fait déjà le filtrage des mois complets
         monthly_sunshine = calculate_monthly_sunshine(df)
         
         if monthly_sunshine.empty:
@@ -2795,9 +2894,10 @@ async def get_year_compare_command(message: types.Message):
         df['month_day'] = df['local_time'].dt.strftime('%m-%d')
         df['day_of_year'] = df['local_time'].dt.dayofyear
         
-        # EXCLUSION d'août 2023 (données incomplètes - début des mesures)
-        df = df[~((df['year'] == 2023) & (df['month'] == 8))].copy()
-        await log_message("Exclusion d'août 2023 (données incomplètes) pour /yearcompare")
+        # Filtrer pour ne garder que les mois complets (incluant le mois en cours) pour cette métrique
+        df_complete = filter_complete_months_only(df, exclude_current_month=False, metric_column=column_name)
+        df = df_complete.copy()
+        await log_message("Filtrage automatique des mois incomplets pour /yearcompare")
         
         # Vérifier qu'on a au moins 2 années de données
         available_years = sorted(df['year'].unique())
@@ -2850,7 +2950,7 @@ async def get_year_compare_command(message: types.Message):
         
         # Titre moderne avec emojis
         ax1.set_title(f'{metric_info["emoji"]} Comparaison annuelle (courbe) - {metric_info["name"]} à {VILLE}\n'
-                    f'📊 Analyse de {len(available_years)} années de données (excl. août 2023)',
+                    f'📊 Analyse de {len(available_years)} années de données (mois complets uniquement)',
                     fontsize=18, fontweight='bold', color='#2c3e50', pad=25)
         
         # Labels modernes avec emojis
@@ -2910,7 +3010,7 @@ async def get_year_compare_command(message: types.Message):
                 stats_text += f"\n📈 Tendance générale: {trend} ({slope:.2f}{metric_info['unit']}/an)"
         
         base_caption = (f"{metric_info['emoji']} Comparaison {metric_info['name']} - {len(available_years)} années\n"
-                       f"📅 Années: {min(available_years)}-{max(available_years)} (excl. août 2023)\n"
+                       f"📅 Années: {min(available_years)}-{max(available_years)} (mois complets uniquement)\n"
                        f"{stats_text}")
         
         # Envoyer le premier graphique (courbe)
@@ -2988,7 +3088,7 @@ async def get_year_compare_command(message: types.Message):
             ax2.set_xticks(x_positions)
             ax2.set_xticklabels([month_names_bars[m-1] for m in available_months])
             ax2.set_title(f'📊 {metric_info["emoji"]} {metric_info["name"]} (barres mensuelles) - {len(available_years_bars)} années à {VILLE}\n'
-                         f'📊 Comparaison par mois (excl. août 2023)',
+                         f'📊 Comparaison par mois (mois complets uniquement)',
                          fontsize=16, fontweight='bold', color='#2c3e50', pad=20)
             
             # Légende moderne

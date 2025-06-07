@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Rymentz
-* VERSIONS : v1.9.3
+* VERSIONS : v1.9.4
 * NOTES : None
 *
 '''
@@ -201,7 +201,8 @@ sent_alerts = {
     'precipitation': None,
     'windspeed': None,
     'uv_index': None,
-    'pressure_msl': None
+    'pressure_msl': None,
+    'data_freshness': None  # Pour tracking des alertes de fraîcheur des données
 }
 
 # Advanced record tracking system
@@ -233,6 +234,8 @@ async def schedule_jobs():
         await check_weather()
         # Vérifier les changements dans les records prévus (notifications d'annulation)
         await check_predicted_record_changes()
+        # Vérifier la fraîcheur des données (alerte si >24h)
+        await check_data_freshness()
         await asyncio.sleep(60)
 
 async def send_alert(message_text, row=None, alert_column=None):
@@ -610,6 +613,97 @@ async def detect_meteorological_bomb(df_forecast):
                 
     except Exception as e:
         await log_message(f"Erreur dans detect_meteorological_bomb: {str(e)}\n{traceback.format_exc()}")
+
+async def check_data_freshness():
+    """Vérifie si la dernière donnée historisée date de plus de 24h et envoie une alerte."""
+    global sent_alerts
+    
+    try:
+        # Vérifier que le fichier CSV existe et n'est pas vide
+        if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
+            await log_message("Fichier CSV inexistant ou vide pour vérification fraîcheur données.")
+            return
+        
+        # Lire le CSV et obtenir la dernière entrée
+        df = pd.read_csv(csv_filename)
+        if df.empty:
+            await log_message("CSV vide pour vérification fraîcheur données.")
+            return
+        
+        # Convertir la colonne time et trier par date
+        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
+        df.dropna(subset=['time'], inplace=True)
+        
+        if df.empty:
+            await log_message("Aucune donnée temporelle valide pour vérification fraîcheur données.")
+            return
+        
+        # Obtenir la dernière entrée chronologique
+        df_sorted = df.sort_values('time')
+        last_entry = df_sorted.iloc[-1]
+        last_data_time = last_entry['time']
+        
+        # Heure actuelle
+        now = pd.Timestamp.now(tz='UTC')
+        
+        # Calculer la différence en heures
+        time_diff = now - last_data_time
+        hours_since_last_data = time_diff.total_seconds() / 3600
+        
+        # Seuil de 24 heures
+        alert_threshold_hours = 24
+        
+        # Convertir en heure locale pour l'affichage
+        last_data_local = last_data_time.tz_convert('Europe/Berlin')
+        last_data_str = last_data_local.strftime('%d/%m/%Y à %H:%M')
+        
+        # Vérifier si une alerte doit être envoyée
+        current_date = now.date()
+        
+        if hours_since_last_data > alert_threshold_hours:
+            # Éviter le spam : ne pas envoyer plus d'une alerte par jour
+            if sent_alerts['data_freshness'] != current_date:
+                # Formater le message d'alerte
+                if hours_since_last_data > 48:
+                    urgency_emoji = "🚨"
+                    urgency_text = "CRITIQUE"
+                    days_old = int(hours_since_last_data // 24)
+                    time_description = f"{days_old} jour{'s' if days_old > 1 else ''}"
+                elif hours_since_last_data > 36:
+                    urgency_emoji = "⚠️"
+                    urgency_text = "URGENT"
+                    time_description = f"{hours_since_last_data:.1f} heures"
+                else:
+                    urgency_emoji = "⏰"
+                    urgency_text = "ATTENTION"
+                    time_description = f"{hours_since_last_data:.1f} heures"
+                
+                alert_message = (
+                    f"{urgency_emoji} {urgency_text} - Données météo obsolètes !\n\n"
+                    f"📊 Dernière donnée historisée : {last_data_str}\n"
+                    f"⏱️ Âge des données : {time_description}\n"
+                    f"🔴 Seuil dépassé : {alert_threshold_hours}h\n\n"
+                    f"🤖 L'API OpenMeteo a peut-être changé ou le service est interrompu.\n"
+                    f"🔧 Vérification et correction nécessaires."
+                )
+                
+                # Envoyer l'alerte
+                await send_alert(alert_message)
+                sent_alerts['data_freshness'] = current_date
+                
+                await log_message(f"Alerte fraîcheur données envoyée: {hours_since_last_data:.1f}h depuis dernière donnée")
+            else:
+                await log_message(f"Données obsolètes ({hours_since_last_data:.1f}h) mais alerte déjà envoyée aujourd'hui")
+        else:
+            # Données fraîches : réinitialiser le tracking si nécessaire
+            if sent_alerts['data_freshness'] is not None:
+                await log_message(f"Données redevenues fraîches ({hours_since_last_data:.1f}h), réinitialisation tracking alertes")
+                sent_alerts['data_freshness'] = None
+            
+    except pd.errors.EmptyDataError:
+        await log_message("Fichier CSV vide lors de la vérification de fraîcheur.")
+    except Exception as e:
+        await log_message(f"Erreur dans check_data_freshness: {str(e)}\n{traceback.format_exc()}")
 
 
 def calculate_confidence_score(forecast_time, current_time):

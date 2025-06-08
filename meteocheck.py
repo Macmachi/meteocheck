@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Rymentz
-* VERSIONS : v2.0.0
+* VERSIONS : v2.0.1
 * NOTES : None
 *
 '''
@@ -614,21 +614,49 @@ async def get_weather_data():
         await log_message(f"Erreur inattendue dans get_weather_data: {str(e)}\n{traceback.format_exc()}")
     return pd.DataFrame(), pd.DataFrame()
 
+async def get_last_recorded_time():
+    """Récupère la dernière heure enregistrée depuis les données historiques CSV."""
+    try:
+        if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
+            return None
+        
+        df = pd.read_csv(csv_filename)
+        if df.empty:
+            return None
+        
+        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
+        df.dropna(subset=['time'], inplace=True)
+        
+        if df.empty:
+            return None
+        
+        # Obtenir la dernière entrée chronologique
+        df_sorted = df.sort_values('time')
+        last_entry = df_sorted.iloc[-1]
+        last_data_time = last_entry['time']
+        
+        # Convertir en heure locale pour l'affichage
+        last_data_local = last_data_time.tz_convert('Europe/Berlin')
+        return last_data_local.strftime('%d/%m à %H:%M')
+        
+    except Exception as e:
+        await log_message(f"Erreur dans get_last_recorded_time: {str(e)}")
+        return None
 
 async def check_weather():
     """Vérifie la météo et envoie des alertes si nécessaire."""
     await log_message("Fonction check_weather exécutée")
     try:
-        df_next_seven_hours, df_next_twenty_four_hours = await get_weather_data()
-        
-        # Mettre à jour le cache des prévisions
-        cached_forecast_data['df_seven_hours'] = df_next_seven_hours.copy()
-        cached_forecast_data['df_twenty_four_hours'] = df_next_twenty_four_hours.copy()
-        cached_forecast_data['last_update'] = pd.Timestamp.now(tz='UTC')
+        # Utiliser le cache au lieu d'appeler directement l'API
+        df_next_seven_hours, df_next_twenty_four_hours = await get_cached_forecast_data()
         
         if df_next_seven_hours.empty and df_next_twenty_four_hours.empty:
             await log_message("Aucune donnée obtenue de get_weather_data dans check_weather. Prochaine vérification dans 1 minute.")
             return
+
+        # Récupérer la dernière heure enregistrée une seule fois
+        last_recorded_time = await get_last_recorded_time()
+        last_recorded_text = f"(dernière mesure: {last_recorded_time})" if last_recorded_time else "(aucune mesure historique)"
 
         # Alertes pour les 7 prochaines heures
         for _, row in df_next_seven_hours.iterrows():
@@ -661,7 +689,7 @@ async def check_weather():
             
             if row['uv_index'] > 8:
                 if sent_alerts['uv_index'] != alert_date_key:
-                    await send_alert(f"☀️ Alerte météo : Index UV prévu de {row['uv_index']:.1f} à {time_local.strftime('%H:%M')} à {VILLE}.", row, 'uv_index')
+                    await send_alert(f"☀️ Alerte météo : Index UV prévu de {row['uv_index']:.1f} à {time_local.strftime('%H:%M')} à {VILLE} {last_recorded_text}.", row, 'uv_index')
                     sent_alerts['uv_index'] = alert_date_key
 
         # Détection de bombe météorologique améliorée pour les 24 prochaines heures
@@ -1819,10 +1847,13 @@ async def start_command(message: types.Message):
 @router.message(Command("weather"))
 async def get_latest_info_command(message: types.Message):
     try:
-        await log_message("Début de get_latest_info_command (utilisant le cache)")
+        await log_message("Début de get_latest_info_command avec double contexte temporel")
         
         # Utiliser le cache des prévisions pour obtenir les données actuelles
         df_seven, df_twenty_four = await get_cached_forecast_data()
+        
+        # Récupérer la dernière heure enregistrée depuis les données historiques
+        last_recorded_time = await get_last_recorded_time()
         
         # Obtenir l'heure de la dernière mise à jour du cache
         cache_update_time = cached_forecast_data['last_update']
@@ -1831,67 +1862,77 @@ async def get_latest_info_command(message: types.Message):
         else:
             cache_update_display = "Inconnue"
         
-        # Prendre la première entrée (la plus proche dans le temps) du cache 7h
-        if not df_seven.empty:
-            # Données de prévision (les plus récentes disponibles)
-            latest_info = df_seven.iloc[0].to_dict()
-            time_display = latest_info['time'].tz_convert('Europe/Berlin').strftime("%Y-%m-%d %H:%M:%S")
-            data_source = "prévisions actuelles (cache)"
-            
-            response_parts = [f"🌡️ Météo actuelle à {VILLE} :\n"]
-            response_parts.append(f"📅 {time_display} (prévision)")
-            response_parts.append(f"🔄 Dernière maj données: {cache_update_display}\n")
-            
-        elif not df_twenty_four.empty:
-            # Fallback vers cache 24h si cache 7h vide
-            latest_info = df_twenty_four.iloc[0].to_dict()
-            time_display = latest_info['time'].tz_convert('Europe/Berlin').strftime("%Y-%m-%d %H:%M:%S")
-            data_source = "prévisions (cache 24h)"
-            
-            response_parts = [f"🌡️ Météo actuelle à {VILLE} :\n"]
-            response_parts.append(f"📅 {time_display} (prévision)")
-            response_parts.append(f"🔄 Dernière maj données: {cache_update_display}\n")
-            
-        else:
-            # Fallback vers CSV si le cache est vide
-            await log_message("Cache vide, fallback vers CSV pour /weather")
-            
-            if not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0:
-                await message.reply("Aucune donnée météo disponible pour le moment.")
-                return
-
-            df = pd.read_csv(csv_filename)
-            if df.empty:
-                await message.reply("Aucune donnée disponible.")
-                return
-                
-            df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
-            df.dropna(subset=['time'], inplace=True)
-            df.sort_values(by='time', inplace=True)
-
-            if df.empty:
-                await message.reply("Aucune donnée valide disponible.")
-                return
-
-            latest_info = df.iloc[-1].to_dict()
-            time_display = pd.to_datetime(latest_info['time'], utc=True).tz_convert('Europe/Berlin').strftime("%Y-%m-%d %H:%M:%S")
-            data_source = "dernières données enregistrées (CSV)"
-            
-            response_parts = [f"🌡️ Météo la plus récente enregistrée à {VILLE} :\n"]
-            response_parts.append(f"📅 {time_display}\n")
-
-        # Construction de la réponse (commune à tous les cas)
-        response_parts.append(f"🌡️ Température: {latest_info.get('temperature_2m', 'N/A')}°C")
-        response_parts.append(f"🌧️ Probabilité de pluie: {latest_info.get('precipitation_probability', 'N/A')}%")
-        response_parts.append(f"💧 Précipitations: {latest_info.get('precipitation', 'N/A')}mm")
-        response_parts.append(f"💨 Vent: {latest_info.get('windspeed_10m', 'N/A')}km/h")
-        response_parts.append(f"☀️ Indice UV: {latest_info.get('uv_index', 'N/A')}")
-        response_parts.append(f"🎈 Pression: {latest_info.get('pressure_msl', 'N/A')} hPa")
-        response_parts.append(f"💦 Humidité: {latest_info.get('relativehumidity_2m', 'N/A')}%")
+        response_parts = [f"🌡️ **Météo actuelle à {VILLE}**\n"]
         
-        await log_message(f"Réponse /weather préparée depuis {data_source}, tentative d'envoi")
+        # === SECTION 1: PRÉVISIONS ===
+        forecast_info = None
+        if not df_seven.empty:
+            # Données de prévision 7h
+            forecast_info = df_seven.iloc[0].to_dict()
+            forecast_time_display = forecast_info['time'].tz_convert('Europe/Berlin').strftime("%d/%m à %H:%M")
+            data_source = "prévisions 7h (cache)"
+        elif not df_twenty_four.empty:
+            # Fallback vers cache 24h
+            forecast_info = df_twenty_four.iloc[0].to_dict()
+            forecast_time_display = forecast_info['time'].tz_convert('Europe/Berlin').strftime("%d/%m à %H:%M")
+            data_source = "prévisions 24h (cache)"
+        
+        if forecast_info:
+            response_parts.append(f"📊 **PRÉVISIONS:**")
+            response_parts.append(f"📅 Prévision pour: {forecast_time_display}")
+            response_parts.append(f"🔄 Dernière maj: {cache_update_display}")
+            response_parts.append(f"🌡️ Température: {forecast_info.get('temperature_2m', 'N/A')}°C")
+            response_parts.append(f"🌧️ Probabilité de pluie: {forecast_info.get('precipitation_probability', 'N/A')}%")
+            response_parts.append(f"💧 Précipitations: {forecast_info.get('precipitation', 'N/A')}mm")
+            response_parts.append(f"💨 Vent: {forecast_info.get('windspeed_10m', 'N/A')}km/h")
+            response_parts.append(f"☀️ Indice UV: {forecast_info.get('uv_index', 'N/A')}")
+            response_parts.append(f"🎈 Pression: {forecast_info.get('pressure_msl', 'N/A')} hPa")
+            response_parts.append(f"💦 Humidité: {forecast_info.get('relativehumidity_2m', 'N/A')}%")
+            response_parts.append("")  # Ligne vide de séparation
+        
+        # === SECTION 2: DERNIÈRE MESURE ENREGISTRÉE ===
+        response_parts.append(f"📊 **DERNIÈRE MESURE ENREGISTRÉE:**")
+        
+        if last_recorded_time:
+            # Lire les dernières données historiques du CSV
+            try:
+                if os.path.exists(csv_filename) and os.path.getsize(csv_filename) > 0:
+                    df = pd.read_csv(csv_filename)
+                    if not df.empty:
+                        df['time'] = pd.to_datetime(df['time'], utc=True, errors='coerce')
+                        df.dropna(subset=['time'], inplace=True)
+                        df.sort_values(by='time', inplace=True)
+                        
+                        if not df.empty:
+                            historical_info = df.iloc[-1].to_dict()
+                            response_parts.append(f"📅 Dernière mesure: {last_recorded_time}")
+                            response_parts.append(f"🌡️ Température: {historical_info.get('temperature_2m', 'N/A')}°C")
+                            response_parts.append(f"🌧️ Probabilité de pluie: {historical_info.get('precipitation_probability', 'N/A')}%")
+                            response_parts.append(f"💧 Précipitations: {historical_info.get('precipitation', 'N/A')}mm")
+                            response_parts.append(f"💨 Vent: {historical_info.get('windspeed_10m', 'N/A')}km/h")
+                            response_parts.append(f"☀️ Indice UV: {historical_info.get('uv_index', 'N/A')}")
+                            response_parts.append(f"🎈 Pression: {historical_info.get('pressure_msl', 'N/A')} hPa")
+                            response_parts.append(f"💦 Humidité: {historical_info.get('relativehumidity_2m', 'N/A')}%")
+                        else:
+                            response_parts.append(f"❌ Données historiques invalides")
+                    else:
+                        response_parts.append(f"❌ Fichier de données historiques vide")
+                else:
+                    response_parts.append(f"❌ Aucun fichier de données historiques")
+            except Exception as e:
+                await log_message(f"Erreur lecture données historiques: {str(e)}")
+                response_parts.append(f"❌ Erreur lecture données historiques")
+        else:
+            response_parts.append(f"❌ Aucune mesure historique disponible")
+        
+        # Si aucune prévision n'est disponible, afficher un message d'erreur
+        if not forecast_info:
+            response_parts.insert(1, f"❌ **Aucune prévision disponible actuellement**\n")
+            await log_message("Aucune prévision disponible dans les caches pour /weather")
+        
+        await log_message(f"Réponse /weather avec double contexte temporel préparée, tentative d'envoi")
         await message.reply("\n".join(response_parts))
-        await log_message("Réponse /weather envoyée avec succès")
+        await log_message("Réponse /weather avec double contexte temporel envoyée avec succès")
 
     except Exception as e:
         await log_message(f"Error in get_latest_info_command: {str(e)}\n{traceback.format_exc()}")

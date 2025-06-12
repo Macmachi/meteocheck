@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Rymentz
-* VERSIONS : v2.0.1
+* VERSIONS : v2.0.2
 * NOTES : None
 *
 '''
@@ -245,7 +245,7 @@ VILLE = config['LOCATION']['VILLE']
 LATITUDE = config['LOCATION']['LATITUDE']
 LONGITUDE = config['LOCATION']['LONGITUDE']
 
-weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&hourly=temperature_2m,precipitation_probability,precipitation,pressure_msl,windspeed_10m,uv_index,relativehumidity_2m&timezone=GMT&forecast_days=2&past_days=2&models=best_match&timeformat=unixtime"
+weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={LATITUDE}&longitude={LONGITUDE}&hourly=temperature_2m,precipitation_probability,precipitation,pressure_msl,windspeed_10m,uv_index,relativehumidity_2m,weather_code,cape&timezone=GMT&forecast_days=2&past_days=2&models=best_match&timeformat=unixtime"
 
 # ================================
 # SYSTÈME DE CACHE PRÉVISIONS
@@ -266,6 +266,7 @@ def is_cache_valid():
     time_since_update = (now - cached_forecast_data['last_update']).total_seconds() / 60
     return time_since_update < cached_forecast_data['cache_duration_minutes']
 
+# Version CORRIGÉE
 async def get_cached_forecast_data():
     """Retourne les données de prévision depuis le cache si valide, sinon depuis l'API."""
     if is_cache_valid():
@@ -273,16 +274,25 @@ async def get_cached_forecast_data():
         return (cached_forecast_data['df_seven_hours'].copy(),
                 cached_forecast_data['df_twenty_four_hours'].copy())
     else:
-        # Cache expiré, appeler l'API et mettre à jour le cache
+        # Cache expiré, appeler l'API
         await log_message("Cache des prévisions expiré, récupération depuis l'API...")
         df_seven, df_twenty_four = await get_weather_data()
         
-        # Mettre à jour le cache
-        cached_forecast_data['df_seven_hours'] = df_seven.copy()
-        cached_forecast_data['df_twenty_four_hours'] = df_twenty_four.copy()
-        cached_forecast_data['last_update'] = pd.Timestamp.now(tz='UTC')
-        
-        await log_message(f"Cache des prévisions mis à jour avec {len(df_seven)} + {len(df_twenty_four)} entrées")
+        # On ne met à jour le cache que si la réponse de l'API a réussi (données non vides)
+        if not df_seven.empty or not df_twenty_four.empty:
+            # Mettre à jour le cache avec les nouvelles données
+            cached_forecast_data['df_seven_hours'] = df_seven.copy()
+            cached_forecast_data['df_twenty_four_hours'] = df_twenty_four.copy()
+            cached_forecast_data['last_update'] = pd.Timestamp.now(tz='UTC')
+            
+            await log_message(f"Cache des prévisions mis à jour avec {len(df_seven)} + {len(df_twenty_four)} entrées valides.")
+        else:
+            # Si les données sont vides (échec de l'API), on ne met PAS à jour le cache.
+            # On logue simplement l'échec.
+            await log_message("Récupération API échouée. Le cache n'est pas mis à jour pour ne pas stocker un échec.")
+            
+        # On retourne toujours les données récupérées, qu'elles soient valides ou vides.
+        # Les fonctions appelantes (comme check_weather) gèrent déjà le cas des données vides.
         return df_seven, df_twenty_four
 
 # Initialisation du Bot et du Dispatcher pour aiogram 3.x
@@ -352,14 +362,35 @@ def clean_csv_file():
 
 
 # Alert tracking
+# REMPLACEZ l'ancien dictionnaire 'sent_alerts' par celui-ci :
 sent_alerts = {
     'temperature': None,
     'precipitation': None,
     'windspeed': None,
     'uv_index': None,
     'pressure_msl': None,
-    'data_freshness': None  # Pour tracking des alertes de fraîcheur des données
+    'data_freshness': None
 }
+
+tracked_storm_alert = {
+    'active': False,
+    'predicted_time': None,
+    'intensity': None,
+    'code': None,
+    'sent_checkpoints': set(),
+    'last_notification_time': None # AJOUT : Heure de la dernière notification de changement
+}
+
+def _reset_storm_tracker():
+    global tracked_storm_alert
+    tracked_storm_alert.update({
+        'active': False,
+        'predicted_time': None,
+        'intensity': None,
+        'code': None,
+        'sent_checkpoints': set(),
+        'last_notification_time': None # AJOUT : Réinitialiser aussi
+    })
 
 # Advanced record tracking system
 predicted_records = {
@@ -529,73 +560,79 @@ async def handle_summary_error(chat_id, error_msg, is_network_error=False):
     else:
         await bot.send_message(chat_id, f"Erreur : {error_msg}")
 
-
 async def get_weather_data():
-    """Récupère les données météo de l'API et met à jour le CSV."""
+    """Récupère les données météo de l'API, utilise les données étendues pour les prévisions,
+    mais met à jour le CSV uniquement avec les colonnes d'origine."""
     try:
         now = pd.Timestamp.now(tz='UTC').floor('h')
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
             async with session.get(weather_url) as resp:
-                resp.raise_for_status() # Lève une exception pour les codes HTTP 4xx/5xx
+                resp.raise_for_status()
                 data = await resp.json()
                 
                 if 'hourly' not in data or not isinstance(data['hourly'], dict):
                     await log_message("Format de données API inattendu: 'hourly' manquant ou incorrect.")
                     return pd.DataFrame(), pd.DataFrame()
 
-                columns = ['time', 'temperature_2m', 'precipitation_probability', 'precipitation', 'pressure_msl', 'windspeed_10m', 'uv_index', 'relativehumidity_2m']
-                
+                # MODIFICATION : Définir les deux listes de colonnes
+                # Colonnes à sauvegarder dans le CSV (votre structure d'origine)
+                columns_to_save = ['time', 'temperature_2m', 'precipitation_probability', 'precipitation', 'pressure_msl', 'windspeed_10m', 'uv_index', 'relativehumidity_2m']
+                # Toutes les colonnes que nous récupérons de l'API
+                all_columns = columns_to_save + ['weather_code', 'cape']
+
                 # Vérifier que toutes les colonnes attendues sont présentes dans les données API
-                for col in columns:
+                for col in all_columns:
                     if col not in data['hourly']:
                         await log_message(f"Colonne API manquante: '{col}' dans data['hourly']")
-                        # Retourner des DataFrames vides si une colonne essentielle manque
-                        if col == 'time': return pd.DataFrame(), pd.DataFrame()
-                        # Pour les autres colonnes, on pourrait initialiser avec des NaN si nécessaire
-                        # mais pour la cohérence, retourner vide est plus sûr.
-                        return pd.DataFrame(), pd.DataFrame()
+                        # Si une colonne essentielle manque, retourner vide
+                        if col in columns_to_save: return pd.DataFrame(), pd.DataFrame()
+                        # Si c'est une colonne optionnelle (cape, etc.), on peut continuer en la remplissant de NaN
+                        data['hourly'][col] = [np.nan] * len(data['hourly']['time'])
 
-                df_api = pd.DataFrame({col: data['hourly'][col] for col in columns})
+
+                # Créer le DataFrame complet avec toutes les données de l'API
+                df_api = pd.DataFrame({col: data['hourly'][col] for col in all_columns})
                 df_api['time'] = pd.to_datetime(df_api['time'], unit='s', utc=True)
                 
-                # Lecture du CSV existant
+                # --- La logique de sauvegarde CSV ne change que sur un point ---
                 if os.path.exists(csv_filename) and os.path.getsize(csv_filename) > 0:
                     try:
                         df_existing = pd.read_csv(csv_filename)
                         df_existing['time'] = pd.to_datetime(df_existing['time'], utc=True, errors='coerce')
-                        df_existing.dropna(subset=['time'], inplace=True) # S'assurer que les dates sont valides
+                        df_existing.dropna(subset=['time'], inplace=True)
                     except pd.errors.EmptyDataError:
-                         df_existing = pd.DataFrame(columns=columns)
-                         df_existing['time'] = pd.to_datetime(df_existing['time'], utc=True) # Assurer le dtype
+                         df_existing = pd.DataFrame(columns=columns_to_save)
+                         df_existing['time'] = pd.to_datetime(df_existing['time'], utc=True)
                 else:
-                    df_existing = pd.DataFrame(columns=columns)
-                    df_existing['time'] = pd.to_datetime(df_existing['time'], utc=True) # Assurer le dtype
+                    df_existing = pd.DataFrame(columns=columns_to_save)
+                    df_existing['time'] = pd.to_datetime(df_existing['time'], utc=True)
 
-                # Données des dernières 24h de l'API pour combler les manques
                 twenty_four_hours_ago = now - pd.Timedelta(hours=24)
-                last_twenty_four_hours_df_api = df_api[(df_api['time'] >= twenty_four_hours_ago) & (df_api['time'] < now)].copy() # .copy() pour éviter SettingWithCopyWarning
+                last_twenty_four_hours_df_api = df_api[(df_api['time'] >= twenty_four_hours_ago) & (df_api['time'] < now)].copy()
 
                 if not last_twenty_four_hours_df_api.empty:
                     missing_data = last_twenty_four_hours_df_api[~last_twenty_four_hours_df_api['time'].isin(df_existing['time'])].copy()
                     if not missing_data.empty:
                         missing_data['time'] = missing_data['time'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-                        # S'assurer que le header n'est écrit que si le fichier est vide ou n'existe pas
                         header_needed = not os.path.exists(csv_filename) or os.path.getsize(csv_filename) == 0
-                        missing_data.to_csv(csv_filename, mode='a', header=header_needed, index=False)
-                        await log_message(f"Enregistrement de {len(missing_data)} nouvelles données manquantes dans le CSV.")
                         
-                        # Vérifier les records sur les nouvelles données historiques réelles
+                        # MODIFICATION CRUCIALE : Sauvegarder uniquement les colonnes désirées
+                        missing_data[columns_to_save].to_csv(csv_filename, mode='a', header=header_needed, index=False)
+                        
+                        await log_message(f"Enregistrement de {len(missing_data)} nouvelles données manquantes dans le CSV (colonnes standard uniquement).")
+                        
+                        # La logique de vérification des records reste inchangée et fonctionnera,
+                        # car elle ne s'attend pas à trouver 'cape' ou 'weather_code' dans les données historiques.
                         for _, row in missing_data.iterrows():
-                            # Reconvertir le temps en datetime pour check_records
                             row_copy = row.copy()
                             row_copy['time'] = pd.to_datetime(row_copy['time'], utc=True)
-                            
-                            # Vérifier les records pour les métriques principales
                             for metric in ['temperature_2m', 'precipitation', 'windspeed_10m', 'pressure_msl', 'uv_index']:
                                 if metric in row_copy and pd.notna(row_copy[metric]):
                                     await check_records(row_copy, metric, is_forecast=False)
                 
-                # Prévisions pour les prochaines heures
+                # --- La logique de retour des prévisions reste inchangée ---
+                # Les DataFrames retournés contiendront TOUTES les colonnes, y compris cape et weather_code,
+                # ce qui est parfait pour nos fonctions de détection.
                 seven_hours_later = now + pd.Timedelta(hours=7)
                 next_seven_hours_df = df_api[(df_api['time'] > now) & (df_api['time'] <= seven_hours_later)].copy()
                 
@@ -604,7 +641,7 @@ async def get_weather_data():
                 
                 return next_seven_hours_df, next_twenty_four_hours_df
 
-    except aiohttp.ClientError as e: # Erreurs réseau spécifiques à aiohttp
+    except aiohttp.ClientError as e:
         await log_message(f"Erreur réseau dans get_weather_data: {str(e)}")
     except json.JSONDecodeError as e:
         await log_message(f"Erreur de décodage JSON dans get_weather_data: {str(e)}")
@@ -647,7 +684,6 @@ async def check_weather():
     """Vérifie la météo et envoie des alertes si nécessaire."""
     await log_message("Fonction check_weather exécutée")
     try:
-        # Utiliser le cache au lieu d'appeler directement l'API
         df_next_seven_hours, df_next_twenty_four_hours = await get_cached_forecast_data()
         
         if df_next_seven_hours.empty and df_next_twenty_four_hours.empty:
@@ -658,15 +694,13 @@ async def check_weather():
         last_recorded_time = await get_last_recorded_time()
         last_recorded_text = f"(dernière mesure: {last_recorded_time})" if last_recorded_time else "(aucune mesure historique)"
 
-        # Alertes pour les 7 prochaines heures
+        # Alertes générales pour les 7 prochaines heures (température, vent fort, etc.)
         for _, row in df_next_seven_hours.iterrows():
-            # S'assurer que row est bien une Series Pandas et non un tuple si iterrows est mal utilisé
             if not isinstance(row, pd.Series): 
                 await log_message(f"Format de ligne inattendu dans df_next_seven_hours: {type(row)}")
                 continue
 
             time_local = row['time'].tz_convert('Europe/Berlin')
-            # Comparaison de date uniquement pour sent_alerts
             alert_date_key = time_local.date()
 
             if row['temperature_2m'] > 35 or row['temperature_2m'] < -10:
@@ -680,7 +714,7 @@ async def check_weather():
                     await send_alert(f"🌧️ Alerte météo : Fortes pluies prévues de {row['precipitation']:.1f}mm à {time_local.strftime('%H:%M')} à {VILLE}.", row, 'precipitation')
                     sent_alerts['precipitation'] = alert_date_key
             
-            if row['windspeed_10m'] > 60: # km/h
+            if row['windspeed_10m'] > 60:
                 if sent_alerts['windspeed'] != alert_date_key:
                     emoji = "🌪️" if row['windspeed_10m'] > 75 else "💨"
                     wind_type = "tempétueux" if row['windspeed_10m'] > 75 else "fort"
@@ -692,15 +726,21 @@ async def check_weather():
                     await send_alert(f"☀️ Alerte météo : Index UV prévu de {row['uv_index']:.1f} à {time_local.strftime('%H:%M')} à {VILLE} {last_recorded_text}.", row, 'uv_index')
                     sent_alerts['uv_index'] = alert_date_key
 
-        # Détection de bombe météorologique améliorée pour les 24 prochaines heures
+        # --- Détection des phénomènes complexes ---
+
+        # 1. Détection et suivi d'orages (sur les 6 prochaines heures)
+        # Utilise le dataframe des 7 prochaines heures pour couvrir la fenêtre de 6h.
+        await detect_thunderstorm_conditions(df_next_seven_hours)
+
+        # 2. Détection de bombe météorologique (sur 24 heures)
+        # Cette détection spécifique nécessite bien une fenêtre de 24h.
         if len(df_next_twenty_four_hours) >= 24:
-            await detect_meteorological_bomb(df_next_twenty_four_hours)
+            await detect_meteorological_bomb(df_next_twenty_four_hours.copy())
     
     except KeyError as e:
         await log_message(f"Erreur de clé dans check_weather (probablement une colonne manquante dans le DataFrame): {str(e)}")
     except Exception as e:
         await log_message(f"Erreur inattendue dans check_weather: {str(e)}\n{traceback.format_exc()}")
-
 
 async def detect_meteorological_bomb(df_forecast):
     """Détection avancée de bombe météorologique selon les critères scientifiques.
@@ -797,6 +837,143 @@ async def detect_meteorological_bomb(df_forecast):
                 
     except Exception as e:
         await log_message(f"Erreur dans detect_meteorological_bomb: {str(e)}\n{traceback.format_exc()}")
+
+
+async def detect_thunderstorm_conditions(df_forecast):
+    """
+    Détecte et suit un événement orageux avec un cooldown adaptatif et des rappels "Mise à l'Abri".
+    - Gère les nouvelles alertes, les mises à jour (escalade/changement) et les annulations.
+    - Envoie des rappels à T-2h, T-1h, T-20min, T-5min.
+    - Se réinitialise 30 minutes après la fin de l'événement.
+    """
+    global tracked_storm_alert
+    
+    try:
+        # Le nom du paramètre a été changé de df_forecast_6h à df_forecast pour plus de clarté
+        if df_forecast.empty:
+            if tracked_storm_alert['active']:
+                await log_message("Données de prévision vides, mais un orage est suivi. Maintien de l'alerte pour ce cycle.")
+            return
+
+        now = pd.Timestamp.now(tz='UTC')
+
+        time_coverage_hours = (df_forecast['time'].max() - now).total_seconds() / 3600
+        if tracked_storm_alert['active'] and time_coverage_hours < 5:
+             await log_message(f"Couverture de prévision faible ({time_coverage_hours:.1f}h). Maintien de l'alerte orage en cours pour éviter une fausse annulation.")
+             return
+        
+        WMO_SEVERITY = {
+            99: {'name': "Orage avec forte grêle", 'intensity': "EXTRÊME", 'emoji': "🚨💀⚡️"},
+            96: {'name': "Orage avec faible grêle", 'intensity': "ÉLEVÉ", 'emoji': "🚨⚡️"},
+            95: {'name': "Orage violent", 'intensity': "ÉLEVÉ", 'emoji': "⚠️⚡️"},
+        }
+        
+        peak_storm_event = None
+        highest_severity_score = 0
+        for _, row in df_forecast.iterrows():
+            code = row.get('weather_code')
+            cape = row.get('cape', 0)
+            current_severity_score = 0
+            event_details = None
+            if code in WMO_SEVERITY:
+                current_severity_score = 3 if WMO_SEVERITY[code]['intensity'] == "EXTRÊME" else 2
+                event_details = {'type': 'code', 'code': code, 'row': row}
+            elif cape > 2000 and row.get('precipitation', 0) > 5:
+                current_severity_score = 1
+                event_details = {'type': 'surveillance', 'code': None, 'row': row}
+            if current_severity_score > highest_severity_score:
+                highest_severity_score = current_severity_score
+                peak_storm_event = event_details
+        
+        # --- Logique de décision ---
+        
+        # CAS A : Aucun orage significatif n'est prévu
+        if peak_storm_event is None:
+            if tracked_storm_alert['active']:
+                time_to_storm = tracked_storm_alert['predicted_time'] - now
+                if time_to_storm.total_seconds() < 3600:      # Moins d'1h
+                    cooldown_seconds = 900  # 15 minutes
+                elif time_to_storm.total_seconds() < 10800: # Moins de 3h
+                    cooldown_seconds = 1800 # 30 minutes
+                else:                                         # Plus de 3h
+                    cooldown_seconds = 3600 # 1 heure
+                
+                last_notif_time = tracked_storm_alert.get('last_notification_time')
+                if last_notif_time is None or (now - last_notif_time).total_seconds() > cooldown_seconds:
+                    await send_alert(f"✅ FIN D'ALERTE ({VILLE}) : Les conditions orageuses prévues se sont dissipées.")
+                    _reset_storm_tracker()
+                else:
+                    await log_message(f"Fin d'alerte détectée, mais en période de cooldown ({cooldown_seconds}s). Notification ignorée.")
+            return
+
+        # CAS B : Un orage est détecté.
+        row = peak_storm_event['row']
+        current_predicted_time = row['time']
+        
+        if tracked_storm_alert['active'] and (now - tracked_storm_alert['predicted_time']).total_seconds() > 1800:
+            await log_message(f"L'événement orageux prévu à {tracked_storm_alert['predicted_time'].tz_convert('Europe/Berlin'):%H:%M} est terminé. Réinitialisation du suivi.")
+            _reset_storm_tracker()
+        
+        if peak_storm_event['type'] == 'code':
+            event_info = WMO_SEVERITY[peak_storm_event['code']]
+            current_intensity = event_info['intensity']
+        else:
+            current_intensity = "MODÉRÉE"
+
+        # CAS B.1 : On ne suivait rien, c'est une NOUVELLE alerte.
+        if not tracked_storm_alert['active']:
+            await send_alert(f"🚨 NOUVELLE ALERTE ORAGE ({VILLE}) - NIVEAU {current_intensity} 🚨\n\n"
+                             f"Un orage est prévu pour le {current_predicted_time.tz_convert('Europe/Berlin').strftime('%d/%m à %H:%M')}.\n"
+                             f"Début du suivi et des notifications programmées.")
+            tracked_storm_alert.update({ 'active': True, 'predicted_time': current_predicted_time, 'intensity': current_intensity, 'code': peak_storm_event['code'], 'sent_checkpoints': set(), 'last_notification_time': now })
+            return
+
+        # CAS B.2 : On suivait déjà un orage. Vérifions les changements.
+        has_changed = ( current_intensity != tracked_storm_alert['intensity'] or abs((current_predicted_time - tracked_storm_alert['predicted_time']).total_seconds()) > 900 )
+
+        if has_changed:
+            time_to_storm = tracked_storm_alert['predicted_time'] - now
+            if time_to_storm.total_seconds() < 3600:      # Moins d'1h
+                cooldown_seconds = 900  # 15 minutes
+            elif time_to_storm.total_seconds() < 10800: # Moins de 3h
+                cooldown_seconds = 1800 # 30 minutes
+            else:                                         # Plus de 3h
+                cooldown_seconds = 3600 # 1 heure
+            
+            last_notif_time = tracked_storm_alert.get('last_notification_time')
+            if last_notif_time is None or (now - last_notif_time).total_seconds() > cooldown_seconds:
+                await send_alert(f"🔄 MISE À JOUR ALERTE ORAGE ({VILLE})\n\n"
+                                 f"L'événement a changé. Nouvelle prévision :\n"
+                                 f"- Intensité : {current_intensity} (précédent: {tracked_storm_alert['intensity']})\n"
+                                 f"- Heure : {current_predicted_time.tz_convert('Europe/Berlin'):%H:%M} (précédent: {tracked_storm_alert['predicted_time'].tz_convert('Europe/Berlin'):%H:%M})\n"
+                                 f"Le compte à rebours des notifications est réinitialisé.")
+                
+                tracked_storm_alert.update({ 'predicted_time': current_predicted_time, 'intensity': current_intensity, 'code': peak_storm_event['code'], 'sent_checkpoints': set(), 'last_notification_time': now })
+            else:
+                await log_message(f"Changement d'orage détecté, mais en période de cooldown ({cooldown_seconds}s). Notification ignorée.")
+            return
+            
+        # CAS B.3 : L'orage n'a pas changé. Vérifions les rappels programmés.
+        time_to_storm = tracked_storm_alert['predicted_time'] - now
+        
+        checkpoints = {
+            'T-2h':  {'td': datetime.timedelta(hours=2), 'window': 600},      # Planification
+            'T-1h':  {'td': datetime.timedelta(hours=1), 'window': 600},      # Point de non-retour
+            'T-20m': {'td': datetime.timedelta(minutes=20), 'window': 300},   # Urgence
+            'T-5m':  {'td': datetime.timedelta(minutes=5), 'window': 120}     # Impact imminent
+        }
+
+        for name, chk in checkpoints.items():
+            if (chk['td'] - datetime.timedelta(seconds=chk['window'])) < time_to_storm <= chk['td']:
+                if name not in tracked_storm_alert['sent_checkpoints']:
+                    await send_alert(f"⏰ RAPPEL ORAGE ({VILLE} - {name}) ⏰\n\n"
+                                     f"L'orage de niveau {tracked_storm_alert['intensity']} est toujours prévu pour {tracked_storm_alert['predicted_time'].tz_convert('Europe/Berlin'):%H:%M}.")
+                    tracked_storm_alert['sent_checkpoints'].add(name)
+                    await log_message(f"Rappel d'orage {name} envoyé.")
+                    break
+
+    except Exception as e:
+        await log_message(f"Erreur dans detect_thunderstorm_conditions: {str(e)}\n{traceback.format_exc()}")
 
 async def check_data_freshness():
     """Vérifie si la dernière donnée historisée date de plus de 24h et envoie une alerte."""

@@ -38,8 +38,8 @@ Lorsqu'une valeur météo dépasse un seuil d'alerte extrême (listé ci-dessus)
 
 4.  **📉 Gestion des Annulations :** Si un record potentiel qui avait été notifié **disparaît** des prévisions ultérieures, le bot envoie une **notification de mise à jour** pour informer que le risque est écarté. Cela évite les fausses alertes et donne une vision dynamique de la situation.
 
-#### ⛈️ Suivi d'Orages avec Paliers de Notification
-Pour les phénomènes orageux, le bot active un mode de suivi qui gère l'événement du début à la fin.
+#### ⛈️ Suivi d'Orages violents avec Paliers de Notification
+Pour les phénomènes orageux violents, le bot active un mode de suivi qui gère l'événement du début à la fin.
 
 *   **Gestion de l'Événement :** Le système envoie des alertes distinctes pour une **NOUVELLE** alerte, une **MISE À JOUR** (changement d'heure ou d'intensité) et une **FIN D'ALERTE**.
 *   **Cooldown Anti-Flapping :** Pour éviter les alertes contradictoires (ex: alerte puis annulation immédiate), un cooldown adaptatif est activé, empêchant une nouvelle notification pendant :

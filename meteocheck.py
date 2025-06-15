@@ -2,7 +2,7 @@
 *
 * PROJET : MeteoCheck
 * AUTEUR : Rymentz
-* VERSIONS : v2.0.3
+* VERSIONS : v2.0.4
 * NOTES : None
 *
 '''
@@ -373,23 +373,26 @@ sent_alerts = {
 }
 
 tracked_storm_alert = {
-    'active': False,
-    'predicted_time': None,
-    'intensity': None,
-    'code': None,
-    'sent_checkpoints': set(),
-    'last_notification_time': None # AJOUT : Heure de la dernière notification de changement
+    'active': False,          # L'alerte est-elle en cours ?
+    'peak_time': None,        # Heure du pic d'intensité prévu (UTC)
+    'start_time': None,       # Heure de début de l'épisode orageux (UTC)
+    'end_time': None,         # Heure de fin de l'épisode orageux (UTC)
+    'peak_code': None,        # Code météo du pic
+    'last_notification_time': None, # Heure de la dernière notif (pour l'anti-spam)
+    'last_notification_signature': "" # Signature de la dernière alerte pour détecter les changements
 }
 
 def _reset_storm_tracker():
+    """Réinitialise l'état du suivi d'orage."""
     global tracked_storm_alert
     tracked_storm_alert.update({
         'active': False,
-        'predicted_time': None,
-        'intensity': None,
-        'code': None,
-        'sent_checkpoints': set(),
-        'last_notification_time': None # AJOUT : Réinitialiser aussi
+        'peak_time': None,
+        'start_time': None,
+        'end_time': None,
+        'peak_code': None,
+        'last_notification_time': None,
+        'last_notification_signature': ""
     })
 
 # Advanced record tracking system
@@ -838,162 +841,120 @@ async def detect_meteorological_bomb(df_forecast):
     except Exception as e:
         await log_message(f"Erreur dans detect_meteorological_bomb: {str(e)}\n{traceback.format_exc()}")
 
-
+# REMPLACEZ la fonction avec cette version finale pour le cooldown multi-paliers
 async def detect_thunderstorm_conditions(df_forecast):
     """
-    Détecte et suit un événement orageux VIOLENT (codes 95, 96, 99) avec un cooldown adaptatif.
-    - Se concentre UNIQUEMENT sur les codes WMO spécifiés.
-    - Valide l'alerte si la probabilité de pluie > 80% dans une fenêtre de 3h.
-    - Gère les nouvelles alertes, les mises à jour et les annulations.
+    Détecte et suit un épisode orageux avec une logique de déclassement, d'annulation
+    et un cooldown de mise à jour multi-paliers.
     """
     global tracked_storm_alert
+    WMO_SEVERE_STORM_CODES = {95, 96, 99}
+    WMO_ALL_STORM_CODES = {17, 29, 80, 81, 82, 91, 92, 93, 94, 95, 96, 97, 98, 99}
     
-    try:
-        if df_forecast.empty:
-            if tracked_storm_alert['active']:
-                await log_message("Données de prévision vides, mais un orage est suivi. Maintien de l'alerte pour ce cycle.")
-            return
+    WMO_SEVERITY = {
+        99: {'name': "Orage avec forte grêle", 'intensity': "EXTRÊME", 'emoji': "🚨💀⚡️"},
+        96: {'name': "Orage avec faible grêle", 'intensity': "ÉLEVÉ", 'emoji': "🚨⚡️"},
+        95: {'name': "Orage violent", 'intensity': "ÉLEVÉ", 'emoji': "⚠️⚡️"},
+    }
+    now = pd.Timestamp.now(tz='UTC')
 
-        now = pd.Timestamp.now(tz='UTC')
+    six_hours_later = now + pd.Timedelta(hours=6)
+    df_next_6h = df_forecast[(df_forecast['time'] >= now) & (df_forecast['time'] <= six_hours_later)].copy()
 
-        time_coverage_hours = (df_forecast['time'].max() - now).total_seconds() / 3600
-        if tracked_storm_alert['active'] and time_coverage_hours < 5:
-             await log_message(f"Couverture de prévision faible ({time_coverage_hours:.1f}h). Maintien de l'alerte orage en cours pour éviter une fausse annulation.")
-             return
-        
-        WMO_SEVERITY = {
-            99: {'name': "Orage avec forte grêle", 'intensity': "EXTRÊME", 'emoji': "🚨💀⚡️"},
-            96: {'name': "Orage avec faible grêle", 'intensity': "ÉLEVÉ", 'emoji': "🚨⚡️"},
-            95: {'name': "Orage violent", 'intensity': "ÉLEVÉ", 'emoji': "⚠️⚡️"},
-        }
-        
-        peak_storm_event = None
-        highest_severity_score = 0
-        
-        # --- BOUCLE DE DÉTECTION SIMPLIFIÉE ---
-        # On ne cherche que les codes WMO violents.
-        for _, row in df_forecast.iterrows():
-            code = row.get('weather_code')
-            if code in WMO_SEVERITY:
-                # On utilise le code WMO comme indicateur de sévérité pour trouver le pic
-                # 99 (plus sévère) > 96 > 95
-                if code > highest_severity_score:
-                    highest_severity_score = code
-                    peak_storm_event = {'type': 'code', 'code': code, 'row': row}
+    severe_stormy_hours = df_next_6h[
+        (df_next_6h['weather_code'].isin(WMO_SEVERE_STORM_CODES)) &
+        (df_next_6h['precipitation_probability'] > 80)
+    ].copy()
 
-        # ==================================================================
-        # LOGIQUE DE VALIDATION PAR PROBABILITÉ DE PLUIE (INCHANGÉE)
-        # ==================================================================
-        if peak_storm_event:
-            storm_time = peak_storm_event['row']['time']
-            
-            # Définir la fenêtre de 3 heures : t-1h, t, t+1h
-            start_window = storm_time - pd.Timedelta(hours=1)
-            end_window = storm_time + pd.Timedelta(hours=1)
-            
-            # Filtrer les prévisions pour cette fenêtre
-            df_window = df_forecast[
-                (df_forecast['time'] >= start_window) & 
-                (df_forecast['time'] <= end_window)
-            ]
-            
-            # Vérifier si la probabilité de pluie maximale dans la fenêtre dépasse 80%
-            if not df_window.empty and df_window['precipitation_probability'].max() > 80:
-                # La condition est remplie, l'événement orageux est validé.
-                pass
-            else:
-                # La condition de pluie n'est PAS remplie.
-                max_prob = df_window['precipitation_probability'].max() if not df_window.empty else 0
-                await log_message(f"Orage violent (code {peak_storm_event['code']}) détecté à {storm_time.tz_convert('Europe/Berlin'):%H:%M} mais ignoré. Probabilité de pluie max: {max_prob:.0f}% (seuil: 80%).")
-                peak_storm_event = None # Invalide l'événement détecté.
-        
-        # --- Logique de décision ---
-        
-        # CAS A : Aucun orage violent n'est prévu (ou a été invalidé)
-        if peak_storm_event is None:
-            if tracked_storm_alert['active']:
-                time_to_storm = tracked_storm_alert['predicted_time'] - now
-                if time_to_storm.total_seconds() < 3600:
-                    cooldown_seconds = 900
-                elif time_to_storm.total_seconds() < 10800:
-                    cooldown_seconds = 1800
-                else:
-                    cooldown_seconds = 3600
-                
-                last_notif_time = tracked_storm_alert.get('last_notification_time')
-                if last_notif_time is None or (now - last_notif_time).total_seconds() > cooldown_seconds:
-                    await send_alert(f"✅ FIN D'ALERTE ({VILLE}) : Les conditions d'orage violent prévues se sont dissipées ou la probabilité de pluie est trop faible.")
-                    _reset_storm_tracker()
-                else:
-                    await log_message(f"Fin d'alerte détectée, mais en période de cooldown ({cooldown_seconds}s). Notification ignorée.")
-            return
-
-        # CAS B : Un orage violent (et validé) est détecté.
-        row = peak_storm_event['row']
-        current_predicted_time = row['time']
-        
-        if tracked_storm_alert['active'] and (now - tracked_storm_alert['predicted_time']).total_seconds() > 1800:
-            await log_message(f"L'événement orageux prévu à {tracked_storm_alert['predicted_time'].tz_convert('Europe/Berlin'):%H:%M} est terminé. Réinitialisation du suivi.")
+    if tracked_storm_alert['active'] and tracked_storm_alert['start_time'] <= now:
+        if tracked_storm_alert['end_time'] < now:
             _reset_storm_tracker()
-        
-        event_info = WMO_SEVERITY[peak_storm_event['code']]
-        current_intensity = event_info['intensity']
-
-        # CAS B.1 : NOUVELLE alerte.
-        if not tracked_storm_alert['active']:
-            await send_alert(f"🚨 NOUVELLE ALERTE ORAGE ({VILLE}) - NIVEAU {current_intensity} 🚨\n\n"
-                             f"Un orage de type '{event_info['name']}' est prévu pour le {current_predicted_time.tz_convert('Europe/Berlin').strftime('%d/%m à %H:%M')}.\n"
-                             f"Conditions de pluie validées (>80%).\n"
-                             f"Début du suivi et des notifications programmées.")
-            tracked_storm_alert.update({ 'active': True, 'predicted_time': current_predicted_time, 'intensity': current_intensity, 'code': peak_storm_event['code'], 'sent_checkpoints': set(), 'last_notification_time': now })
             return
+        current_hour_utc = now.floor('h')
+        is_still_stormy_now = not severe_stormy_hours[severe_stormy_hours['time'] == current_hour_utc].empty
+        if not is_still_stormy_now:
+            await send_alert(f"✅ FIN D'ALERTE ORAGE ({VILLE}) : L'épisode orageux semble s'être terminé plus tôt que prévu.")
+            _reset_storm_tracker()
+        return
 
-        # CAS B.2 : MISE À JOUR d'une alerte existante.
-        has_changed = ( current_intensity != tracked_storm_alert['intensity'] or abs((current_predicted_time - tracked_storm_alert['predicted_time']).total_seconds()) > 900 )
+    if severe_stormy_hours.empty:
+        if tracked_storm_alert['active']:
+            any_storm_hours = df_next_6h[df_next_6h['weather_code'].isin(WMO_ALL_STORM_CODES)].copy()
+            if not any_storm_hours.empty:
+                new_peak_code = int(any_storm_hours['weather_code'].max())
+                message = (f"📉 DÉCLASSEMENT DE L'ALERTE ({VILLE})\n\n"
+                           f"L'orage initialement prévu sera finalement moins violent (nouveau code météo max : {new_peak_code}).\n"
+                           f"Le suivi actif est donc arrêté. Une nouvelle alerte sera émise si les conditions s'aggravent à nouveau.")
+                await send_alert(message)
+            else:
+                message = f"🚫 ALERTE ANNULÉE ({VILLE}) : Les conditions orageuses prévues se sont entièrement dissipées."
+                await send_alert(message)
+            _reset_storm_tracker()
+        return
 
-        if has_changed:
-            time_to_storm = tracked_storm_alert['predicted_time'] - now
-            if time_to_storm.total_seconds() < 3600:
-                cooldown_seconds = 900
-            elif time_to_storm.total_seconds() < 10800:
-                cooldown_seconds = 1800
-            else:
-                cooldown_seconds = 3600
-            
-            last_notif_time = tracked_storm_alert.get('last_notification_time')
-            if last_notif_time is None or (now - last_notif_time).total_seconds() > cooldown_seconds:
-                await send_alert(f"🔄 MISE À JOUR ALERTE ORAGE ({VILLE})\n\n"
-                                 f"L'événement a changé. Nouvelle prévision :\n"
-                                 f"- Intensité : {current_intensity} (précédent: {tracked_storm_alert['intensity']})\n"
-                                 f"- Heure : {current_predicted_time.tz_convert('Europe/Berlin'):%H:%M} (précédent: {tracked_storm_alert['predicted_time'].tz_convert('Europe/Berlin'):%H:%M})\n"
-                                 f"Le compte à rebours des notifications est réinitialisé.")
-                
-                tracked_storm_alert.update({ 'predicted_time': current_predicted_time, 'intensity': current_intensity, 'code': peak_storm_event['code'], 'sent_checkpoints': set(), 'last_notification_time': now })
-            else:
-                await log_message(f"Changement d'orage détecté, mais en période de cooldown ({cooldown_seconds}s). Notification ignorée.")
-            return
-            
-        # CAS B.3 : RAPPELS programmés.
-        time_to_storm = tracked_storm_alert['predicted_time'] - now
+    peak_event = severe_stormy_hours.loc[severe_stormy_hours['weather_code'].idxmax()]
+    peak_time = peak_event['time']
+    peak_code = int(peak_event['weather_code'])
+
+    stormy_hours_sorted = severe_stormy_hours.sort_values(by='time')
+    start_time = stormy_hours_sorted['time'].min()
+    end_time = start_time
+    for i in range(len(stormy_hours_sorted) - 1):
+        if (stormy_hours_sorted['time'].iloc[i+1] - stormy_hours_sorted['time'].iloc[i]).total_seconds() <= 3600:
+            end_time = stormy_hours_sorted['time'].iloc[i+1]
+        else:
+            break
+
+    event_info = WMO_SEVERITY.get(peak_code, {'name': f"Orage (code {peak_code})", 'intensity': "MODÉRÉE", 'emoji': "⚡️"})
+    start_local_str = start_time.tz_convert('Europe/Berlin').strftime('%H:%M')
+    end_local_str = (end_time + pd.Timedelta(hours=1)).tz_convert('Europe/Berlin').strftime('%H:%M')
+    peak_local_str = peak_time.tz_convert('Europe/Berlin').strftime('%H:%M')
+    
+    current_signature = f"{start_time}-{end_time}-{peak_time}-{peak_code}"
+
+    if not tracked_storm_alert['active']:
+        duration_hours = (end_time - start_time).total_seconds() / 3600
+        if duration_hours < 1:
+             message = (f"{event_info['emoji']} NOUVELLE ALERTE ORAGE ({VILLE}) - NIVEAU {event_info['intensity']} 🚨\n\n"
+                        f"Un orage de type '{event_info['name']}' est prévu dans la tranche horaire de **{start_local_str}** à **{end_local_str}**.\n\n"
+                        f"Conditions de pluie validées (>80%).")
+        else:
+            message = (f"{event_info['emoji']} NOUVELLE ALERTE ORAGE ({VILLE}) - NIVEAU {event_info['intensity']} 🚨\n\n"
+                       f"Un épisode orageux est prévu entre **{start_local_str}** et **{end_local_str}**.\n"
+                       f"Le pic d'intensité ('{event_info['name']}') est attendu vers **{peak_local_str}**.\n\n"
+                       f"Conditions de pluie validées (>80%).")
+        await send_alert(message)
+        tracked_storm_alert.update({ 'active': True, 'peak_time': peak_time, 'start_time': start_time, 'end_time': end_time, 'peak_code': peak_code, 'last_notification_time': now, 'last_notification_signature': current_signature })
+
+    elif tracked_storm_alert['active'] and current_signature != tracked_storm_alert['last_notification_signature']:
         
-        checkpoints = {
-            'T-2h':  {'td': datetime.timedelta(hours=2), 'window': 600},
-            'T-1h':  {'td': datetime.timedelta(hours=1), 'window': 600},
-            'T-20m': {'td': datetime.timedelta(minutes=20), 'window': 300},
-            'T-5m':  {'td': datetime.timedelta(minutes=5), 'window': 120}
-        }
+        ### NOUVELLE LOGIQUE DE COOLDOWN DYNAMIQUE MULTI-PALIERS ###
+        time_to_storm_start_seconds = (tracked_storm_alert['start_time'] - now).total_seconds()
 
-        for name, chk in checkpoints.items():
-            if (chk['td'] - datetime.timedelta(seconds=chk['window'])) < time_to_storm <= chk['td']:
-                if name not in tracked_storm_alert['sent_checkpoints']:
-                    await send_alert(f"⏰ RAPPEL ORAGE ({VILLE} - {name}) ⏰\n\n"
-                                     f"L'orage de niveau {tracked_storm_alert['intensity']} est toujours prévu pour {tracked_storm_alert['predicted_time'].tz_convert('Europe/Berlin'):%H:%M}.")
-                    tracked_storm_alert['sent_checkpoints'].add(name)
-                    await log_message(f"Rappel d'orage {name} envoyé.")
-                    break
-
-    except Exception as e:
-        await log_message(f"Erreur dans detect_thunderstorm_conditions: {str(e)}\n{traceback.format_exc()}")
+        if time_to_storm_start_seconds > 7200:      # Plus de 2 heures
+            cooldown_seconds = 3600  # 1 heure
+        elif time_to_storm_start_seconds > 3600:    # Entre 1 et 2 heures
+            cooldown_seconds = 1800  # 30 minutes
+        elif time_to_storm_start_seconds > 1800:    # Entre 30 et 60 minutes
+            cooldown_seconds = 900   # 15 minutes
+        else:                                       # Moins de 30 minutes
+            cooldown_seconds = 600   # 10 minutes
+        
+        time_since_last_notif = (now - tracked_storm_alert['last_notification_time']).total_seconds()
+        
+        if time_since_last_notif > cooldown_seconds:
+            duration_hours = (end_time - start_time).total_seconds() / 3600
+            if duration_hours < 1:
+                message = (f"🔄 MISE À JOUR ALERTE ORAGE ({VILLE})\n\n"
+                           f"La prévision a changé. L'orage est maintenant prévu dans la tranche horaire de **{start_local_str}** à **{end_local_str}**.")
+            else:
+                 message = (f"🔄 MISE À JOUR ALERTE ORAGE ({VILLE})\n\n"
+                            f"La prévision a changé. Nouvel épisode prévu entre **{start_local_str}** et **{end_local_str}**.\n"
+                            f"Le pic d'intensité ('{event_info['name']}') est maintenant attendu vers **{peak_local_str}**.")
+            await send_alert(message)
+            tracked_storm_alert.update({ 'peak_time': peak_time, 'start_time': start_time, 'end_time': end_time, 'peak_code': peak_code, 'last_notification_time': now, 'last_notification_signature': current_signature })
+        else:
+            await log_message(f"Changement d'orage détecté, mais en période de cooldown ({time_since_last_notif:.0f}s < {cooldown_seconds}s). Notification ignorée.")
 
 async def check_data_freshness():
     """Vérifie si la dernière donnée historisée date de plus de 24h et envoie une alerte."""

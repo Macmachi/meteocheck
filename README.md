@@ -15,7 +15,7 @@ MeteoCheck est un bot Telegram météorologique complet qui surveille, analyse e
   *   Indice UV élevé : **> 8**
 * 🏆 **Analyse de Record Historique :** Lorsqu'une alerte de seuil est déclenchée, le bot vérifie si la valeur constitue également un record annuel ou absolu (voir section anti-spam ci-dessous).
 * **🌪️ Détection de bombes météorologiques** avec calculs scientifiques adaptés à la latitude.
-* ⛈️ **Suivi avancé des orages** avec alertes évolutives et rappels de mise à l'abri.
+* ⛈️ **Suivi avancé des orages violents** avec alertes évolutives et rappels de mise à l'abri.
 
 ---
 
@@ -42,16 +42,8 @@ Lorsqu'une valeur météo dépasse un seuil d'alerte extrême (listé ci-dessus)
 Pour les phénomènes orageux violents, le bot active un mode de suivi qui gère l'événement du début à la fin.
 
 *   **Gestion de l'Événement :** Le système envoie des alertes distinctes pour une **NOUVELLE** alerte, une **MISE À JOUR** (changement d'heure ou d'intensité) et une **FIN D'ALERTE**.
-*   **Cooldown Anti-Flapping :** Pour éviter les alertes contradictoires (ex: alerte puis annulation immédiate), un cooldown adaptatif est activé, empêchant une nouvelle notification pendant :
-    *   **15 minutes** si l'orage est à moins d'1h.
-    *   **30 minutes** si l'orage est à moins de 3h.
-    *   **1 heure** si l'orage est plus lointain.
-*   **Paliers de Rappel "Mise à l'Abri" :** Des notifications programmées sont envoyées à des moments clés avant l'impact :
-    *   **T-2h :** Rappel de planification.
-    *   **T-1h :** Rappel de préparation.
-    *   **T-20min :** Alerte d'urgence.
-    *   **T-5min :** Alerte d'impact imminent.
-
+*   **Cooldown Anti-Flapping :** Pour éviter les alertes contradictoires (ex: alerte puis annulation immédiate), un cooldown adaptatif est activé, empêchant une nouvelle notification.
+  
 ---
 
 ### 📊 Commandes d'Analyse Météo
